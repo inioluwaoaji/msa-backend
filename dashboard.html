@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maynd Stomir - Operations Control Hub</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
+        header { background-color: #1e293b; color: white; padding: 20px; border-radius: 8px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        h1 { margin: 0; font-size: 24px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-top: 5px solid #3b82f6; display: flex; flex-direction: column; justify-content: space-between; }
+        .customer-name { font-size: 18px; font-weight: bold; margin-bottom: 5px; color: #1e293b; }
+        .tag { display: inline-block; padding: 4px 8px; font-size: 12px; font-weight: bold; border-radius: 4px; background: #e2e8f0; color: #475569; margin-bottom: 15px; width: fit-content; }
+        .details { font-size: 14px; margin-bottom: 8px; }
+        .details span { font-weight: bold; color: #64748b; }
+        .desc { background: #f8fafc; padding: 10px; border-radius: 6px; font-size: 13px; font-style: italic; margin-top: 10px; margin-bottom: 15px; color: #475569; border-left: 3px solid #cbd5e1; }
+        
+        /* Interactive Control Elements */
+        .controls-zone { border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 15px; }
+        label { font-size: 11px; font-weight: bold; color: #64748b; display: block; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .control-select { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #cbd5e1; background-color: #fff; font-size: 14px; margin-bottom: 12px; }
+        .btn-action { width: 100%; color: white; border: none; padding: 8px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: background 0.2s; margin-bottom: 8px; }
+        .btn-status { background-color: #3b82f6; }
+        .btn-status:hover { background-color: #2563eb; }
+        .btn-assign { background-color: #8b5cf6; }
+        .btn-assign:hover { background-color: #7c3aed; }
+        .btn-refresh { background-color: #10b981; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .btn-refresh:hover { background-color: #059669; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>Maynd Stomir Control Hub</h1>
+            <p style="margin: 5px 0 0 0; opacity: 0.8;">Live Operations Dashboard</p>
+        </div>
+        <button class="btn-refresh" onclick="refreshDashboardData()">🔄 Refresh Hub Data</button>
+    </header>
+
+    <div class="grid" id="jobsGrid">
+        <!-- Live cards will generate here automatically -->
+    </div>
+
+    <script>
+        // Global storage for freelancers list to share across job card generation
+        let globalFreelancers = [];
+
+        async function refreshDashboardData() {
+            const grid = document.getElementById('jobsGrid');
+            grid.innerHTML = '<p>Fetching live dataset layers...</p>';
+            
+            try {
+                // 1. Fetch Freelancers List First
+                const freelancerRes = await fetch('/api/get_freelancers');
+                globalFreelancers = await freelancerRes.json();
+
+                // 2. Fetch Customer Repair Jobs
+                const jobsRes = await fetch('/api/get_jobs');
+                const jobs = await jobsRes.json();
+                
+                grid.innerHTML = '';
+                
+                if (!jobs || jobs.length === 0) {
+                    grid.innerHTML = '<p>No customer jobs submitted yet.</p>';
+                    return;
+                }
+
+                jobs.forEach(job => {
+                    const currentStatus = job.status || 'Pending';
+                    const currentTech = job.assigned_technician || '';
+                    
+                    // Generate dynamic dropdown options for freelancers based on email data rows
+                    let freelancerOptions = `<option value="">-- Unassigned (Select Technician) --</option>`;
+                    globalFreelancers.forEach(free => {
+                        const isSelected = currentTech === free.email_address ? 'selected' : '';
+                        freelancerOptions += `<option value="${free.email_address}" ${isSelected}>🛠️ ${free.trade_skill} (${free.email_address})</option>`;
+                    });
+
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.innerHTML = `
+                        <div>
+                            <div class="customer-name">${job.customer_name || 'Anonymous'}</div>
+                            <div class="tag">${job.problem_category || 'General Repair'}</div>
+                            <div class="details"><span>📞 Phone:</span> ${job.phone_number}</div>
+                            <div class="details"><span>📍 Address:</span> Zone ${job.zone_number}, St ${job.street_number}, Bldg ${job.building_number}</div>
+                            <div class="details"><span>📅 Availability:</span> ${job.customer_availability}</div>
+                            <div class="desc">"${job.description || 'No description provided.'}"</div>
+                        </div>
+                        
+                        <div class="controls-zone">
+                            <!-- Section A: Status Flow Management -->
+                            <label>Operational Status</label>
+                            <select class="control-select" id="status-${job.uuid}">
+                                <option value="Pending" ${currentStatus === 'Pending' ? 'selected' : ''}>⏳ Pending Assignment</option>
+                                <option value="In Progress" ${currentStatus === 'In Progress' ? 'selected' : ''}>⚡ Technician Dispatched</option>
+                                <option value="Completed" ${currentStatus === 'Completed' ? 'selected' : ''}>✅ Job Completed</option>
+                            </select>
+                            <button class="btn-action btn-status" onclick="updateJobStatus('${job.uuid}')">Save Status State</button>
+                            
+                            <div style="height: 10px;"></div>
+
+                            <!-- Section B: Live Freelancer Assignment Routing -->
+                            <label>Assigned Professional</label>
+                            <select class="control-select" id="tech-${job.uuid}">
+                                ${freelancerOptions}
+                            </select>
+                            <button class="btn-action btn-assign" onclick="assignTechnician('${job.uuid}')">Assign Technician</button>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (error) {
+                grid.innerHTML = '<p style="color: red;">Error linking with live backend endpoints.</p>';
+                console.error(error);
+            }
+        }
+
+        async function updateJobStatus(jobUuid) {
+            const selectElement = document.getElementById(`status-${jobUuid}`);
+            const updatedStatus = selectElement.value;
+            
+            try {
+                const response = await fetch(`/api/update_job_status?uuid=${jobUuid}&status=${encodeURIComponent(updatedStatus)}`, {
+                    method: 'PATCH'
+                });
+                if (response.ok) {
+                    alert('Operational changes pushed successfully!');
+                    refreshDashboardData();
+                } else {
+                    alert('Failed to execute status sync.');
+                }
+            } catch (error) {
+                alert('Connection failure with backend server.');
+            }
+        }
+
+        async function assignTechnician(jobUuid) {
+            const selectElement = document.getElementById(`tech-${jobUuid}`);
+            const selectedTechEmail = selectElement.value;
+            
+            try {
+                const response = await fetch(`/api/assign_technician?uuid=${jobUuid}&freelancer_email=${encodeURIComponent(selectedTechEmail)}`, {
+                    method: 'PATCH'
+                });
+                if (response.ok) {
+                    alert('Technician assigned successfully to this active ticket!');
+                    refreshDashboardData();
+                } else {
+                    alert('Failed to update assignment field data.');
+                }
+            } catch (error) {
+                alert('Connection failure during technician assignment.');
+            }
+        }
+
+        // Trigger double-fetch engine load automatically on launch
+        window.onload = refreshDashboardData;
+    </script>
+</body>
+</html>
