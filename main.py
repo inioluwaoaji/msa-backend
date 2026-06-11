@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 import os
 import requests
 from datetime import datetime
@@ -160,3 +161,34 @@ def assign_technician_to_job(uuid: int, freelancer_email: str):
     payload = {"assigned_technician": freelancer_email}
     response = requests.patch(target_url, json=payload, headers=headers)
     return response.json()
+    class WhatsAppAlert(BaseModel):
+    message: str
+    recipient: str
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_dispatch_webhook(alert: WhatsAppAlert):
+    # This verifies the production live webhook handles outgoing alert strings
+    print(f"--- WhatsApp Dispatch Triggered ---")
+    print(f"Sending Alert: {alert.message}")
+    print(f"To: {alert.recipient}")
+    print(f"------------------------------------")
+    return {
+        "status": "success",
+        "message": "WhatsApp dispatch alert processed successfully",
+        "dispatched_string": alert.message
+    }
+    class WhatsAppAlert(BaseModel):
+    message: str
+    recipient: str
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_dispatch_webhook(alert: WhatsAppAlert):
+    print(f"--- WhatsApp Dispatch Triggered ---")
+    print(f"Sending Alert: {alert.message}")
+    print(f"To: {alert.recipient}")
+    print(f"------------------------------------")
+    return {
+        "status": "success",
+        "message": "WhatsApp dispatch alert processed successfully",
+        "dispatched_string": alert.message
+    }
