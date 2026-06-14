@@ -24,9 +24,17 @@ app.add_middleware(
 )
 
 # Supabase configuration setup
+from supabase import create_client, Client, ClientOptions
+
+# Supabase configuration setup
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
+
+# Explicitly check external/foreign schemas if 'public' fails
+# (Adjust "public" to your specific schema name if you created a custom one)
+options = ClientOptions(schema="public") 
+
+supabase: Client = create_client(url, key, options=options)
 
 # Data Schema
 class JobSubmission(BaseModel):
