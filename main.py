@@ -9,8 +9,8 @@ from supabase import create_client, Client
 # Initialize FastAPI App
 app = FastAPI(
     title="Maynd Stomir Backend API",
-    description="Production backend pipeline handling jobs, tracking, and automated dispatch logic.",
-    version="1.1.0"
+    description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
+    version="1.2.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -41,7 +41,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # 3. Pydantic Models for Validation
-# Includes backend validation constraints for the Qatari operational rule matrix
+# Enforces backend validation constraints matching the Qatar marketplace operational rules
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
@@ -53,36 +53,43 @@ class JobSubmission(BaseModel):
     job_photo_url: Optional[str] = None
 
 
-# 4. Helper Function for Automated Outbound Notification
+# 4. Helper Function for Automated Outbound Twilio Notification
 async def send_whatsapp_message(to_number: str, message: str):
     """
-    Background worker that forwards the notification payload to the external WhatsApp gateway provider.
+    Background worker that forwards the notification payload to the Twilio WhatsApp Sandbox.
     """
-    gateway_url = "https://api.whatsapp.com/v1/messages" 
-    whatsapp_api_key = os.environ.get("WHATSAPP_API_KEY", "")
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    from_number = "whatsapp:+14155238886"  # Standard Twilio Sandbox Number
     
-    if not whatsapp_api_key:
-        print("❌ Error: WHATSAPP_API_KEY environment variable is not set.")
+    if not account_sid or not auth_token:
+        print("❌ Error: Twilio environment variables (SID/TOKEN) are not set.")
         return
 
-    headers = {
-        "Authorization": f"Bearer {whatsapp_api_key}",
-        "Content-Type": "application/json"
-    }
+    gateway_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    
+    # Clean up phone number format to ensure it works internationally (e.g., whatsapp:+974XXXXXXXX)
+    clean_number = to_number.strip().replace(" ", "").replace("+", "")
+    formatted_to = f"whatsapp:+{clean_number}"
+
     payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {"body": message}
+        "From": from_number,
+        "To": formatted_to,
+        "Body": message
     }
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(gateway_url, json=payload, headers=headers)
+            # Twilio utilizes HTTP Basic Auth (Account SID as username, Auth Token as password)
+            response = await client.post(
+                gateway_url, 
+                data=payload, 
+                auth=(account_sid, auth_token)
+            )
             response.raise_for_status()
-            print(f"✅ WhatsApp alert successfully sent to {to_number}")
+            print(f"✅ WhatsApp alert successfully queued via Twilio to {formatted_to}")
         except httpx.HTTPError as e:
-            print(f"❌ WhatsApp Gateway Communication Error: {e}")
+            print(f"❌ Twilio Communication Failure: {e}")
 
 
 # 5. Core API Routes
@@ -90,10 +97,10 @@ async def send_whatsapp_message(to_number: str, message: str):
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
     Receives frontend maintenance request payloads, pushes them straight into the Supabase 'jobs' table,
-    and handles background triggers for automated WhatsApp dispatching.
+    and schedules background triggers for automated Twilio WhatsApp dispatching.
     """
     try:
-        # Convert Pydantic object to dictionary for database insertion
+        # Convert Pydantic object validation model to dictionary for database insertion
         job_data = job.model_dump()
         
         # Execute Supabase insert targeting the foreign relation schema mapping natively
@@ -111,21 +118,23 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         new_job = inserted_records[0]
         job_id = new_job.get("id")
         
-        # Build the exclusive tracking link requested by Yemi
+        # Build the secure, exclusive tracking link requested by Yemi
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
         
-        # Queue the Tuesday Automated WhatsApp task so it triggers immediately upon success
+        # Construct the world-class notification layout string
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
             f"Hi {job.full_name},\n"
-            f"Your maintenance request has been submitted successfully.\n\n"
+            f"Your maintenance request has been successfully processed.\n\n"
             f"📦 *Job ID:* {job_id}\n"
             f"📋 *Category:* {job.category}\n\n"
             f"🔗 *Track Your Job Progress Live Here:* {tracking_url}"
         )
+        
+        # Dispatch the notification to run in the background so the user's form submission stays instant
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         
-        # Return pristine JSON structure back to Olamiposi's frontend script
+        # Return pristine JSON structure back to Olamiposi's frontend script to fetch the job ID
         return {
             "status": "success",
             "message": "Job logged successfully into Supabase!",
@@ -133,14 +142,14 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         }
 
     except Exception as error:
-        print(f"Backend Crash Logged: {str(error)}")
+        print(f"Backend Pipeline Crash: {str(error)}")
         raise HTTPException(status_code=500, detail=f"Internal Database Link Failure: {str(error)}")
 
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
     """
-    Dedicated operational endpoint to handle status shifts (e.g. tracking updates from the dashboard).
+    Dedicated operational webhook endpoint to handle status shifts (e.g. real-time tracking updates from the dashboard).
     """
     record = payload.get("record", {})
     job_id = record.get("id")
