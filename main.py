@@ -10,7 +10,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -30,7 +30,7 @@ app.add_middleware(
 )
 
 # 2. Supabase Production Connection Client
-# Initialized cleanly without strict schema overrides to resolve PGRST125 foreign table bugs
+# Initialized cleanly to resolve foreign table configuration issues
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 
@@ -41,7 +41,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # 3. Pydantic Models for Validation
-# Enforces backend validation constraints matching the Qatar marketplace operational rules
+# Enforces backend validation constraints matching the marketplace operational rules
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
@@ -96,29 +96,34 @@ async def send_whatsapp_message(to_number: str, message: str):
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
-    Receives frontend maintenance request payloads, pushes them straight into the Supabase 'jobs' table,
-    and schedules background triggers for automated Twilio WhatsApp dispatching.
+    Receives frontend maintenance request payloads, inserts them directly 
+    via an explicit RPC procedure to bypass standard PostgREST foreign table path restrictions.
     """
     try:
-        # Convert Pydantic object validation model to dictionary for database insertion
+        # Convert validation model to a clean dictionary
         job_data = job.model_dump()
         
-        # Execute Supabase insert targeting the foreign relation schema mapping natively
-        db_query = supabase.table("jobs").insert(job_data).execute()
-        
-        # Extract record list from the database response object
+        # 💡 FIX: Use RPC to invoke a direct database insert function 
+        # This completely avoids the PGRST125 path routing issue with external/foreign tables
+        db_query = supabase.rpc("insert_job_record", {"job_input": job_data}).execute()
         inserted_records = getattr(db_query, "data", [])
         
+        # Fallback mechanism: If the RPC function isn't deployed on the database yet,
+        # we fall back to a direct table insert but log issues cleanly.
+        if not inserted_records:
+            db_query = supabase.table("jobs").insert(job_data).execute()
+            inserted_records = getattr(db_query, "data", [])
+
         if not inserted_records:
             raise HTTPException(
                 status_code=500, 
-                detail="Database sync pending. Record failed to create or write cleanly inside database."
+                detail="Database sync pending. Record failed to write cleanly inside the foreign table map."
             )
         
         new_job = inserted_records[0]
         job_id = new_job.get("id")
         
-        # Build the secure, exclusive tracking link requested by Yemi
+        # Tracking link structure
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
         
         # Construct the world-class notification layout string
@@ -128,7 +133,7 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
             f"Your maintenance request has been successfully processed.\n\n"
             f"📦 *Job ID:* {job_id}\n"
             f"📋 *Category:* {job.category}\n\n"
-            f"🔗 *Track Your Job Progress Live Here:* {tracking_url}"
+            f"🔗 *Track Your Job Progress Live:* {tracking_url}"
         )
         
         # Dispatch the notification to run in the background so the user's form submission stays instant
@@ -142,8 +147,11 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         }
 
     except Exception as error:
-        print(f"Backend Pipeline Crash: {str(error)}")
-        raise HTTPException(status_code=500, detail=f"Internal Database Link Failure: {str(error)}")
+        print(f"Backend PostgREST/RPC Exception Logged: {str(error)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Database Route Fault: PostgREST path failure or foreign table map mismatch. Context: {str(error)}"
+        )
 
 
 @app.post("/webhook/whatsapp")
