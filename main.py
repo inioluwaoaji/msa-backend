@@ -10,11 +10,10 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.3.0"
+    version="1.4.0"
 )
 
 # 1. CORS Configuration Security Layer
-# Resolves the origin blockages between Vercel and Render
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "http://localhost:3000",
@@ -29,19 +28,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Supabase Production Connection Client
-# Initialized cleanly to resolve foreign table configuration issues
+# 2. Supabase Configuration Environment Variables
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠️ WARNING: Missing Supabase Environment Variables!")
 
+# Kept for compatibility if needed elsewhere, but we bypass its routing engine for insertions
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # 3. Pydantic Models for Validation
-# Enforces backend validation constraints matching the marketplace operational rules
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
@@ -60,7 +58,7 @@ async def send_whatsapp_message(to_number: str, message: str):
     """
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-    from_number = "whatsapp:+14155238886"  # Standard Twilio Sandbox Number
+    from_number = "whatsapp:+14155238886"
     
     if not account_sid or not auth_token:
         print("❌ Error: Twilio environment variables (SID/TOKEN) are not set.")
@@ -68,7 +66,6 @@ async def send_whatsapp_message(to_number: str, message: str):
 
     gateway_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     
-    # Clean up phone number format to ensure it works internationally (e.g., whatsapp:+974XXXXXXXX)
     clean_number = to_number.strip().replace(" ", "").replace("+", "")
     formatted_to = f"whatsapp:+{clean_number}"
 
@@ -80,7 +77,6 @@ async def send_whatsapp_message(to_number: str, message: str):
     
     async with httpx.AsyncClient() as client:
         try:
-            # Twilio utilizes HTTP Basic Auth (Account SID as username, Auth Token as password)
             response = await client.post(
                 gateway_url, 
                 data=payload, 
@@ -96,28 +92,41 @@ async def send_whatsapp_message(to_number: str, message: str):
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
-    Receives frontend maintenance request payloads, inserts them directly 
-    via an explicit RPC procedure to bypass standard PostgREST foreign table path restrictions.
+    Receives frontend maintenance requests and uses raw HTTP routing to force 
+    data insertion directly into the target REST endpoint, bypassing PGRST125 path errors.
     """
     try:
-        # Convert validation model to a clean dictionary
         job_data = job.model_dump()
         
-        # 💡 FIX: Use RPC to invoke a direct database insert function 
-        # This completely avoids the PGRST125 path routing issue with external/foreign tables
-        db_query = supabase.rpc("insert_job_record", {"job_input": job_data}).execute()
-        inserted_records = getattr(db_query, "data", [])
+        # 💡 PERMANENT FIX: Send a raw HTTP POST directly to the explicit REST route endpoint.
+        # This completely stops the SDK from throwing path errors over foreign table configurations.
+        raw_rest_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/jobs"
         
-        # Fallback mechanism: If the RPC function isn't deployed on the database yet,
-        # we fall back to a direct table insert but log issues cleanly.
-        if not inserted_records:
-            db_query = supabase.table("jobs").insert(job_data).execute()
-            inserted_records = getattr(db_query, "data", [])
-
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"  # Forces Supabase to return the newly created row data
+        }
+        
+        async with httpx.AsyncClient() as client:
+            db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
+            
+            # If explicit REST path fails, try routing natively to public table mapping schema
+            if db_response.status_code != 201 and db_response.status_code != 200:
+                print(f"Direct REST failed ({db_response.status_code}), attempting explicit schema configuration...")
+                headers["Accept-Profile"] = "public"
+                headers["Content-Profile"] = "public"
+                db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
+            
+            # Raise an exception if both approaches fail to clean write the database log
+            db_response.raise_for_status()
+            inserted_records = db_response.json()
+        
         if not inserted_records:
             raise HTTPException(
                 status_code=500, 
-                detail="Database sync pending. Record failed to write cleanly inside the foreign table map."
+                detail="Database sync pending. Record failed to write cleanly inside the database map."
             )
         
         new_job = inserted_records[0]
@@ -126,7 +135,7 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         # Tracking link structure
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
         
-        # Construct the world-class notification layout string
+        # Construct notification layout string
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
             f"Hi {job.full_name},\n"
@@ -136,10 +145,9 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
             f"🔗 *Track Your Job Progress Live:* {tracking_url}"
         )
         
-        # Dispatch the notification to run in the background so the user's form submission stays instant
+        # Queue the background notification worker
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         
-        # Return pristine JSON structure back to Olamiposi's frontend script to fetch the job ID
         return {
             "status": "success",
             "message": "Job logged successfully into Supabase!",
@@ -147,17 +155,20 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         }
 
     except Exception as error:
-        print(f"Backend PostgREST/RPC Exception Logged: {str(error)}")
+        print(f"Backend Direct REST Exception Logged: {str(error)}")
+        # If it's an HTTP response error, grab the text detailing why it failed
+        error_detail = getattr(error, "response", None)
+        detail_msg = error_detail.text if error_detail else str(error)
         raise HTTPException(
             status_code=500, 
-            detail=f"Database Route Fault: PostgREST path failure or foreign table map mismatch. Context: {str(error)}"
+            detail=f"Database Direct Route Failure. Context: {detail_msg}"
         )
 
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
     """
-    Dedicated operational webhook endpoint to handle status shifts (e.g. real-time tracking updates from the dashboard).
+    Dedicated operational webhook endpoint to handle status shifts.
     """
     record = payload.get("record", {})
     job_id = record.get("id")
