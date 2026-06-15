@@ -10,7 +10,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.7.0"
+    version="1.8.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -50,8 +50,7 @@ class JobSubmission(BaseModel):
     id_photo_url: Optional[str] = None
     job_photo_url: Optional[str] = None
 
-    # Automatically ignores unexpected or extra frontend fields 
-    # (like 'photo_url') instead of throwing a validation crash or 500 database error.
+    # Automatically ignores unexpected or extra frontend fields instead of crashing
     model_config = ConfigDict(extra="ignore")
 
 
@@ -84,7 +83,7 @@ async def send_whatsapp_message(to_number: str, message: str):
             response = await client.post(
                 gateway_url, 
                 data=payload, 
-                auth=(account_sid, auth_token)
+                auth=(account_sid, account_sid if not auth_token else auth_token)
             )
             response.raise_for_status()
             print(f"✅ WhatsApp alert successfully queued via Twilio to {formatted_to}")
@@ -96,22 +95,29 @@ async def send_whatsapp_message(to_number: str, message: str):
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
-    Receives frontend maintenance requests, sanitizes empty fields, fixes URL routing paths,
-    and forces data insertion directly into the target REST endpoint safely.
+    Receives frontend maintenance requests, maps them directly to your 
+    exact database layout schema, and sends them cleanly to Supabase.
     """
     try:
-        # Extract the validated data model fields
+        # Extract the validated data model fields from the frontend payload
         job_data = job.model_dump()
         
-        # SANITATION LAYER: If description is broken, empty, or contains 'undefined', clean it
-        if not job_data.get("description") or "undefined" in job_data.get("description", "").lower() or job_data.get("description", "").strip() == "":
-            job_data["description"] = f"Maintenance requested for category: {job.category}. (Location details omitted by user)"
-        
-        # Guard clause ensuring that text names aren't empty strings triggering database constraint rejections
-        if not job_data.get("full_name") or not job_data.get("full_name").strip():
-            job_data["full_name"] = "Anonymous Customer"
+        # 🔄 SCHEMA MAPPING LAYER (Matches image_777dbc.png columns)
+        supabase_payload = {
+            "customer_name": job_data.get("full_name") or "Anonymous Customer",
+            "phone_number": job_data.get("phone_number"),
+            "category": job_data.get("category"),
+            "problem_category": job_data.get("category"),  # Maps to both possible schema columns safely
+            "description": job_data.get("description") or f"Maintenance requested for category: {job.category}.",
+            "photo_url": job_data.get("job_photo_url") or job_data.get("id_photo_url"),
+            "status": "PENDING"
+        }
 
-        # 🛠️ FIXED: Sanitize the base url string if it already contains the API root path
+        # Handle sanitation layer for descriptions containing 'undefined' or empty blocks
+        if "undefined" in str(supabase_payload["description"]).lower() or not str(supabase_payload["description"]).strip():
+            supabase_payload["description"] = f"Maintenance requested for category: {job.category}."
+
+        # 🛠️ URL RESOLUTION SECURITY LAYER: Prevents doubling error (/rest/v1/rest/v1)
         base_url = SUPABASE_URL.strip()
         if "/rest/v1" in base_url:
             base_url = base_url.split("/rest/v1")[0]
@@ -126,15 +132,15 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         }
         
         async with httpx.AsyncClient() as client:
-            db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
+            db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
             
             if db_response.status_code != 201 and db_response.status_code != 200:
                 print(f"Direct REST failed ({db_response.status_code}), attempting explicit schema configuration...")
                 headers["Accept-Profile"] = "public"
                 headers["Content-Profile"] = "public"
-                db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
+                db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
             
-            # Explicit logging fallback to catch exact Supabase table layout complaints
+            # Catch and log any remaining schema anomalies
             if db_response.status_code not in [200, 201]:
                 print(f"❌ Supabase Database Error Response: {db_response.text}")
                 
@@ -154,7 +160,7 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
-            f"Hi {job_data['full_name']},\n"
+            f"Hi {supabase_payload['customer_name']},\n"
             f"Your maintenance request has been successfully processed.\n\n"
             f"📦 *Job ID:* {job_id}\n"
             f"📋 *Category:* {job.category}\n\n"
@@ -188,7 +194,7 @@ async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTas
     job_id = record.get("id")
     current_status = record.get("status", "PENDING")
     phone_number = record.get("phone_number")
-    customer_name = record.get("full_name", "Customer")
+    customer_name = record.get("customer_name", record.get("full_name", "Customer"))
     
     if not job_id or not phone_number:
         raise HTTPException(status_code=400, detail="Missing critical job tracking parameters.")
