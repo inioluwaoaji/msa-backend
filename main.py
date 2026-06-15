@@ -10,7 +10,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.5.0"
+    version="1.6.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -50,7 +50,7 @@ class JobSubmission(BaseModel):
     id_photo_url: Optional[str] = None
     job_photo_url: Optional[str] = None
 
-    # 🛠️ FIXED: Automatically ignores unexpected or extra frontend fields 
+    # 🛠️ Automatically ignores unexpected or extra frontend fields 
     # (like 'photo_url') instead of throwing a validation crash or 500 database error.
     model_config = ConfigDict(extra="ignore")
 
@@ -96,13 +96,21 @@ async def send_whatsapp_message(to_number: str, message: str):
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
-    Receives frontend maintenance requests and uses raw HTTP routing to force 
-    data insertion directly into the target REST endpoint, bypassing PGRST125 path errors.
+    Receives frontend maintenance requests, sanitizes empty fields, and forces 
+    data insertion directly into the target REST endpoint safely.
     """
     try:
-        # Crucial: Using job.model_dump() here extracts ONLY the clean keys specified in our schema above.
+        # Extract the validated data model fields
         job_data = job.model_dump()
         
+        # 🛠️ SANITATION LAYER: If description is broken, empty, or contains 'undefined', clean it
+        if not job_data.get("description") or "undefined" in job_data.get("description", "").lower() or job_data.get("description", "").strip() == "":
+            job_data["description"] = f"Maintenance requested for category: {job.category}. (Location details omitted by user)"
+        
+        # Guard clause ensuring that text names aren't empty strings triggering database constraint rejections
+        if not job_data.get("full_name") or not job_data.get("full_name").strip():
+            job_data["full_name"] = "Anonymous Customer"
+
         raw_rest_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/jobs"
         
         headers = {
@@ -121,6 +129,10 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
                 headers["Content-Profile"] = "public"
                 db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
             
+            # Explicit logging fallback to catch exact Supabase table layout complaints
+            if db_response.status_code not in [200, 201]:
+                print(f"❌ Supabase Database Error Response: {db_response.text}")
+                
             db_response.raise_for_status()
             inserted_records = db_response.json()
         
@@ -137,7 +149,7 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
-            f"Hi {job.full_name},\n"
+            f"Hi {job_data['full_name']},\n"
             f"Your maintenance request has been successfully processed.\n\n"
             f"📦 *Job ID:* {job_id}\n"
             f"📋 *Category:* {job.category}\n\n"
