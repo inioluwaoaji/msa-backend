@@ -2,7 +2,7 @@ import os
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from supabase import create_client, Client
 
@@ -10,7 +10,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.4.0"
+    version="1.5.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -35,7 +35,7 @@ SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠️ WARNING: Missing Supabase Environment Variables!")
 
-# Kept for compatibility if needed elsewhere, but we bypass its routing engine for insertions
+# Kept for compatibility, though raw HTTP routing is used for database stability
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -49,6 +49,10 @@ class JobSubmission(BaseModel):
     preferred_time: str
     id_photo_url: Optional[str] = None
     job_photo_url: Optional[str] = None
+
+    # 🛠️ FIXED: Automatically ignores unexpected or extra frontend fields 
+    # (like 'photo_url') instead of throwing a validation crash or 500 database error.
+    model_config = ConfigDict(extra="ignore")
 
 
 # 4. Helper Function for Automated Outbound Twilio Notification
@@ -96,30 +100,27 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     data insertion directly into the target REST endpoint, bypassing PGRST125 path errors.
     """
     try:
+        # Crucial: Using job.model_dump() here extracts ONLY the clean keys specified in our schema above.
         job_data = job.model_dump()
         
-        # 💡 PERMANENT FIX: Send a raw HTTP POST directly to the explicit REST route endpoint.
-        # This completely stops the SDK from throwing path errors over foreign table configurations.
         raw_rest_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/jobs"
         
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
-            "Prefer": "return=representation"  # Forces Supabase to return the newly created row data
+            "Prefer": "return=representation"
         }
         
         async with httpx.AsyncClient() as client:
             db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
             
-            # If explicit REST path fails, try routing natively to public table mapping schema
             if db_response.status_code != 201 and db_response.status_code != 200:
                 print(f"Direct REST failed ({db_response.status_code}), attempting explicit schema configuration...")
                 headers["Accept-Profile"] = "public"
                 headers["Content-Profile"] = "public"
                 db_response = await client.post(raw_rest_url, json=job_data, headers=headers)
             
-            # Raise an exception if both approaches fail to clean write the database log
             db_response.raise_for_status()
             inserted_records = db_response.json()
         
@@ -132,10 +133,8 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         new_job = inserted_records[0]
         job_id = new_job.get("id")
         
-        # Tracking link structure
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
         
-        # Construct notification layout string
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
             f"Hi {job.full_name},\n"
@@ -145,7 +144,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
             f"🔗 *Track Your Job Progress Live:* {tracking_url}"
         )
         
-        # Queue the background notification worker
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         
         return {
@@ -156,7 +154,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
 
     except Exception as error:
         print(f"Backend Direct REST Exception Logged: {str(error)}")
-        # If it's an HTTP response error, grab the text detailing why it failed
         error_detail = getattr(error, "response", None)
         detail_msg = error_detail.text if error_detail else str(error)
         raise HTTPException(
