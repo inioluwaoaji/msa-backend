@@ -10,7 +10,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="1.6.0"
+    version="1.7.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -50,7 +50,7 @@ class JobSubmission(BaseModel):
     id_photo_url: Optional[str] = None
     job_photo_url: Optional[str] = None
 
-    # 🛠️ Automatically ignores unexpected or extra frontend fields 
+    # Automatically ignores unexpected or extra frontend fields 
     # (like 'photo_url') instead of throwing a validation crash or 500 database error.
     model_config = ConfigDict(extra="ignore")
 
@@ -96,14 +96,14 @@ async def send_whatsapp_message(to_number: str, message: str):
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
-    Receives frontend maintenance requests, sanitizes empty fields, and forces 
-    data insertion directly into the target REST endpoint safely.
+    Receives frontend maintenance requests, sanitizes empty fields, fixes URL routing paths,
+    and forces data insertion directly into the target REST endpoint safely.
     """
     try:
         # Extract the validated data model fields
         job_data = job.model_dump()
         
-        # 🛠️ SANITATION LAYER: If description is broken, empty, or contains 'undefined', clean it
+        # SANITATION LAYER: If description is broken, empty, or contains 'undefined', clean it
         if not job_data.get("description") or "undefined" in job_data.get("description", "").lower() or job_data.get("description", "").strip() == "":
             job_data["description"] = f"Maintenance requested for category: {job.category}. (Location details omitted by user)"
         
@@ -111,7 +111,12 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         if not job_data.get("full_name") or not job_data.get("full_name").strip():
             job_data["full_name"] = "Anonymous Customer"
 
-        raw_rest_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/jobs"
+        # 🛠️ FIXED: Sanitize the base url string if it already contains the API root path
+        base_url = SUPABASE_URL.strip()
+        if "/rest/v1" in base_url:
+            base_url = base_url.split("/rest/v1")[0]
+            
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs"
         
         headers = {
             "apikey": SUPABASE_KEY,
