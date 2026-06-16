@@ -11,7 +11,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.3.0"
+    version="2.4.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -351,22 +351,27 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
 async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
     """
     Receives incoming freelancer/technician applications and routes them straight to the database.
-    (Updated to completely map full name, qid_number, and custom descriptions safely)
+    (Updated payload structural mappings to match exact database screenshot design columns perfectly)
     """
     try:
         app_data = application.model_dump()
         
-        # Build payload matching database table schema mapping fields accurately
+        # Append full name alongside years of experience directly inside description to preserve data structural continuity safely
+        extended_description = (
+            f"Applicant Name: {app_data.get('full_name')} | "
+            f"Experience: {app_data.get('experience_years')} Years | "
+            f"Details: {app_data.get('description') or 'None provided.'}"
+        )
+        
+        # Build payload matching your exact database schema names
         supabase_payload = {
-            "applicant_name": app_data.get("full_name"),
             "phone_number": app_data.get("phone_number"),
-            "email": app_data.get("email"),
-            "category": app_data.get("category"),
-            "experience_years": app_data.get("experience_years"),
+            "whatsapp_number": app_data.get("phone_number"),
+            "email_address": app_data.get("email"),
+            "trade_skill": app_data.get("category"),
             "qid_number": app_data.get("qid_number"),
-            "description": app_data.get("description"),
-            "photo_url": app_data.get("id_photo_url"),
-            "status": "REVIEW_PENDING"
+            "description": extended_description,
+            "id_photo_url": app_data.get("id_photo_url")
         }
 
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
