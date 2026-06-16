@@ -10,8 +10,8 @@ from supabase import create_client, Client
 # Initialize FastAPI App
 app = FastAPI(
     title="Maynd Stomir Backend API",
-    description="Production backend pipeline handling jobs, tracking, and automated Twilio WhatsApp dispatch logic.",
-    version="2.0.0"
+    description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
+    version="2.1.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -54,8 +54,21 @@ class JobSubmission(BaseModel):
     # Automatically ignores unexpected or extra fields instead of crashing
     model_config = ConfigDict(extra="ignore")
 
+
 class AssignTechnicianPayload(BaseModel):
     technician_name: str = Field(..., alias="assigned_technician")
+
+
+class FreelanceApplication(BaseModel):
+    full_name: str = Field(..., description="Applicant's full name.")
+    phone_number: str = Field(..., min_length=8, max_length=8, description="Exactly 8 digits.")
+    email: str = Field(..., description="Contact email address.")
+    category: str = Field(..., description="Main trade/skill category, e.g., AC, Plumbing, Electrical.")
+    experience_years: int = Field(..., description="Years of field experience.")
+    id_photo_url: Optional[str] = None
+    resume_url: Optional[str] = None
+
+    model_config = ConfigDict(extra="ignore")
 
 
 # 4. Data Extraction & Contract Transformation Helpers
@@ -130,6 +143,9 @@ async def send_whatsapp_message(to_number: str, message: str):
 
 
 # 6. Core API Routes
+
+# --- CUSTOMER JOB PIPELINE ---
+
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
     """
@@ -326,6 +342,69 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Technician process allocation breakdown: {str(e)}")
 
+
+# --- FREELANCE ONBOARDING PIPELINE ---
+
+@app.post("/freelance_applications", status_code=201)
+async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
+    """
+    Receives incoming freelancer/technician applications and routes them straight to the database.
+    """
+    try:
+        app_data = application.model_dump()
+        
+        # Build the payload mapping to your Supabase table schema
+        supabase_payload = {
+            "applicant_name": app_data.get("full_name"),
+            "phone_number": app_data.get("phone_number"),
+            "email": app_data.get("email"),
+            "category": app_data.get("category"),
+            "experience_years": app_data.get("experience_years"),
+            "photo_url": app_data.get("id_photo_url"),
+            "resume_url": app_data.get("resume_url"),
+            "status": "REVIEW_PENDING"
+        }
+
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
+            db_response.raise_for_status()
+            inserted_records = db_response.json()
+            
+        if not inserted_records:
+            raise HTTPException(status_code=500, detail="Failed to log freelance application data.")
+
+        # Automation drop: Send confirmation message to the applying technician via WhatsApp
+        notification_msg = (
+            f"🛠️ *Maynd Stomir - Application Received*\n\n"
+            f"Hi {app_data['full_name']},\n"
+            f"Thank you for applying to join our network as a freelance technician.\n\n"
+            f"📋 *Category:* {app_data['category']}\n"
+            f"Status: Our operations team is currently reviewing your credentials. We will be in touch shortly!"
+        )
+        background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
+
+        return {
+            "status": "success",
+            "message": "Freelance application submitted successfully!",
+            "data": inserted_records[0]
+        }
+
+    except Exception as error:
+        print(f"POST /freelance_applications error: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Application intake pipeline failed: {str(error)}")
+
+
+# --- GLOBAL SYSTEM ENDPOINTS ---
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
