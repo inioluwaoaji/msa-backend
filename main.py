@@ -215,3 +215,110 @@ async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTas
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "environment": "production"}
+    # 1. GET Single Job by ID
+@app.get("/jobs/{job_id}")
+async def get_job_by_id(job_id: str):
+    """Fetches a single tracking record from Supabase by its primary ID."""
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?id=eq.{job_id}"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Accept": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+            
+        if not records:
+            raise HTTPException(status_code=404, detail="Job not found.")
+            
+        return records[0]
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Job fetch failed: {str(e)}")
+
+
+# 2. GET All Jobs (For his admin/dashboard view)
+@app.get("/jobs")
+async def get_all_jobs():
+    """Retrieves all job records, ordered by newest created first."""
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?order=created_at.desc"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Accept": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch jobs: {str(e)}")
+
+
+# 3. GET Jobs by Phone Number Lookup
+@app.get("/jobs/lookup/{phone_number}")
+async def lookup_jobs_by_phone(phone_number: str):
+    """Looks up all jobs associated with a specific customer phone number."""
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?phone_number=eq.{phone_number.strip()}"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Accept": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Phone lookup failed: {str(e)}")
+
+
+# Pydantic validation model for updating a technician assignment
+class AssignTechnicianPayload(BaseModel):
+    technician_name: str = Field(..., alias="assigned_technician")
+
+# 4. PATCH Assign a Technician
+@app.patch("/jobs/{job_id}/assign")
+async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
+    """Updates a job to assign a technician and flips status to ASSIGNED."""
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?id=eq.{job_id}"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+        
+        # Matches column names 'assigned_technician' and 'status' from your DB schema
+        update_data = {
+            "assigned_technician": payload.technician_name,
+            "status": "ASSIGNED"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(raw_rest_url, json=update_data, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+            
+        if not records:
+            raise HTTPException(status_code=404, detail="Job not found to update.")
+            
+        return {"status": "success", "message": "Technician assigned!", "data": records[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to assign technician: {str(e)}")
