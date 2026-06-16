@@ -11,7 +11,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.2.0"
+    version="2.3.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -63,11 +63,14 @@ class FreelanceApplication(BaseModel):
     full_name: str = Field(..., description="Applicant's full name.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Exactly 8 digits.")
     email: str = Field(..., description="Contact email address.")
-    category: str = Field(..., description="Main trade/skill category, e.g., AC, Plumbing, Electrical.")
+    category: str = Field(..., alias="trade", description="Maps frontend 'trade' selection to backend category field.")
     experience_years: int = Field(..., description="Years of field experience.")
+    qid_number: str = Field(..., description="Qatar ID Number validation requirement.")
+    description: Optional[str] = Field(None, description="Detailed text box of what they do.")
     id_photo_url: Optional[str] = None
 
-    model_config = ConfigDict(extra="ignore")
+    # Allows populating using either the python field name or frontend 'trade' alias
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 # 4. Data Extraction & Contract Transformation Helpers
@@ -348,18 +351,20 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
 async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
     """
     Receives incoming freelancer/technician applications and routes them straight to the database.
-    (Updated to fully strip resume_url to follow agreed frontend specification)
+    (Updated to completely map full name, qid_number, and custom descriptions safely)
     """
     try:
         app_data = application.model_dump()
         
-        # Build payload matching database table expectations without resume_url
+        # Build payload matching database table schema mapping fields accurately
         supabase_payload = {
             "applicant_name": app_data.get("full_name"),
             "phone_number": app_data.get("phone_number"),
             "email": app_data.get("email"),
             "category": app_data.get("category"),
             "experience_years": app_data.get("experience_years"),
+            "qid_number": app_data.get("qid_number"),
+            "description": app_data.get("description"),
             "photo_url": app_data.get("id_photo_url"),
             "status": "REVIEW_PENDING"
         }
