@@ -11,7 +11,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # 1. CORS Configuration Security Layer
@@ -66,7 +66,6 @@ class FreelanceApplication(BaseModel):
     category: str = Field(..., description="Main trade/skill category, e.g., AC, Plumbing, Electrical.")
     experience_years: int = Field(..., description="Years of field experience.")
     id_photo_url: Optional[str] = None
-    resume_url: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -349,11 +348,12 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
 async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
     """
     Receives incoming freelancer/technician applications and routes them straight to the database.
+    (Updated to fully strip resume_url to follow agreed frontend specification)
     """
     try:
         app_data = application.model_dump()
         
-        # Build the payload mapping to your Supabase table schema
+        # Build payload matching database table expectations without resume_url
         supabase_payload = {
             "applicant_name": app_data.get("full_name"),
             "phone_number": app_data.get("phone_number"),
@@ -361,7 +361,6 @@ async def create_freelance_application(application: FreelanceApplication, backgr
             "category": app_data.get("category"),
             "experience_years": app_data.get("experience_years"),
             "photo_url": app_data.get("id_photo_url"),
-            "resume_url": app_data.get("resume_url"),
             "status": "REVIEW_PENDING"
         }
 
