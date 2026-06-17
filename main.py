@@ -11,13 +11,14 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.4.0"
+    version="2.4.1"
 )
 
-# 1. CORS Configuration Security Layer
+# 1. Updated CORS Configuration Layer requested by Olamiposi
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
-    "http://localhost:3000",
+    "https://mayndstomir.com",
+    "http://localhost:5500",
     "http://127.0.0.1:5500"
 ]
 
@@ -36,7 +37,7 @@ SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠️ WARNING: Missing Supabase Environment Variables!")
 
-# Kept for architectural compatibility; raw HTTP endpoints are leveraged for connection pooling stability
+# Kept for architectural compatibility
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -51,7 +52,6 @@ class JobSubmission(BaseModel):
     id_photo_url: Optional[str] = None
     job_photo_url: Optional[str] = None
 
-    # Automatically ignores unexpected or extra fields instead of crashing
     model_config = ConfigDict(extra="ignore")
 
 
@@ -69,28 +69,19 @@ class FreelanceApplication(BaseModel):
     description: Optional[str] = Field(None, description="Detailed text box of what they do.")
     id_photo_url: Optional[str] = None
 
-    # Allows populating using either the python field name or frontend 'trade' alias
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 # 4. Data Extraction & Contract Transformation Helpers
 def extract_location_field(description: str, field_name: str) -> Optional[str]:
-    """
-    Scans description text using regular expressions to extract location details
-    e.g., matching 'Zone 45', 'Street 230', or 'Building 20'.
-    """
     pattern = rf"{field_name}\s*(\d+)"
     match = re.search(pattern, description, re.IGNORECASE)
     return match.group(1) if match else None
 
 
 def map_to_api_contract(db_record: dict) -> dict:
-    """
-    Translates raw database column schemas back into the exact names 
-    agreed upon in the frontend API contract specification.
-    """
     return {
-        "id": db_record.get("uuid"),  # Map primary key database 'uuid' column directly to 'id'
+        "id": db_record.get("uuid"),
         "full_name": db_record.get("customer_name"),
         "phone_number": db_record.get("phone_number"),
         "category": db_record.get("category") or db_record.get("problem_category"),
@@ -109,9 +100,6 @@ def map_to_api_contract(db_record: dict) -> dict:
 
 # 5. Helper Function for Automated Outbound Twilio Notification
 async def send_whatsapp_message(to_number: str, message: str):
-    """
-    Background worker that forwards notifications to the Twilio WhatsApp interface.
-    """
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
     from_number = "whatsapp:+14155238886"
@@ -150,29 +138,21 @@ async def send_whatsapp_message(to_number: str, message: str):
 
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
-    """
-    Receives frontend maintenance submissions, normalizes values to raw database 
-    columns, and outputs structural responses mapped exactly to the frontend contract.
-    """
     try:
         job_data = job.model_dump()
         desc = job_data.get("description") or ""
         
-        # Parse structural positioning indices directly from description string if present
         zone = extract_location_field(desc, "Zone")
         street = extract_location_field(desc, "Street")
         building = extract_location_field(desc, "Building")
 
-        # Normalize dates and times into a unified availability property
         availability = None
         if job_data.get("preferred_date"):
             availability = f"{job_data['preferred_date']} {job_data.get('preferred_time', '')}".strip()
 
-        # Sanitize undefined or broken text strings gracefully
         if "undefined" in desc.lower() or not desc.strip():
             desc = f"Maintenance requested for category: {job.category}."
 
-        # Map frontend data payload fields to exact target database columns
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
             "phone_number": job_data.get("phone_number"),
@@ -205,7 +185,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         if not inserted_records:
             raise HTTPException(status_code=500, detail="Database save failed.")
         
-        # Map back to API Contract layout format for Olamiposi's frontend response
         formatted_response = map_to_api_contract(inserted_records[0])
         job_id = formatted_response.get("id")
         
@@ -235,9 +214,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
 
 @app.get("/jobs/{job_id}")
 async def get_job_by_id(job_id: str):
-    """
-    Queries database logs dynamically utilizing 'uuid' filtering matching the schema.
-    """
     try:
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
@@ -263,9 +239,6 @@ async def get_job_by_id(job_id: str):
 
 @app.get("/jobs")
 async def get_all_jobs():
-    """
-    Fetches comprehensive set of job objects back to the dashboard management panels.
-    """
     try:
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?order=created_at.desc"
@@ -288,9 +261,6 @@ async def get_all_jobs():
 
 @app.get("/jobs/lookup/{phone_number}")
 async def lookup_jobs_by_phone(phone_number: str):
-    """
-    Queries the database log matching target historical phone records.
-    """
     try:
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?phone_number=eq.{phone_number.strip()}"
@@ -313,9 +283,6 @@ async def lookup_jobs_by_phone(phone_number: str):
 
 @app.patch("/jobs/{job_id}/assign")
 async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
-    """
-    Binds a technician to a specific task instance shifting state status to ASSIGNED.
-    """
     try:
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
@@ -349,21 +316,15 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
 
 @app.post("/freelance_applications", status_code=201)
 async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
-    """
-    Receives incoming freelancer/technician applications and routes them straight to the database.
-    (Updated payload structural mappings to match exact database screenshot design columns perfectly)
-    """
     try:
         app_data = application.model_dump()
         
-        # Append full name alongside years of experience directly inside description to preserve data structural continuity safely
         extended_description = (
             f"Applicant Name: {app_data.get('full_name')} | "
             f"Experience: {app_data.get('experience_years')} Years | "
             f"Details: {app_data.get('description') or 'None provided.'}"
         )
         
-        # Build payload matching your exact database schema names
         supabase_payload = {
             "phone_number": app_data.get("phone_number"),
             "whatsapp_number": app_data.get("phone_number"),
@@ -392,7 +353,6 @@ async def create_freelance_application(application: FreelanceApplication, backgr
         if not inserted_records:
             raise HTTPException(status_code=500, detail="Failed to log freelance application data.")
 
-        # Automation drop: Send confirmation message to the applying technician via WhatsApp
         notification_msg = (
             f"🛠️ *Maynd Stomir - Application Received*\n\n"
             f"Hi {app_data['full_name']},\n"
@@ -417,9 +377,6 @@ async def create_freelance_application(application: FreelanceApplication, backgr
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
-    """
-    Automated status shift webhook listener triggering WhatsApp tracking alerts.
-    """
     record = payload.get("record", {})
     job_id = record.get("uuid") or record.get("id")
     current_status = record.get("status", "PENDING")
