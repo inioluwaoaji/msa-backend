@@ -11,10 +11,10 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.4.1"
+    version="2.4.2"
 )
 
-# 1. Updated CORS Configuration Layer requested by Olamiposi
+# 1. CORS Configuration Layer
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
@@ -399,6 +399,8 @@ async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTas
     return {"status": "success", "message": "WhatsApp tracking status dispatch processed."}
 
 
+# Patched health route to support both GET and free-tier HEAD requests
 @app.get("/health")
+@app.head("/health")
 async def health_check():
     return {"status": "healthy", "environment": "production"}
