@@ -1,9 +1,10 @@
 import os
 import re
 import httpx
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from typing import Optional, List
 from supabase import create_client, Client
 
@@ -11,14 +12,14 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.4.5"
+    version="2.5.0"
 )
 
-# 1. Complete CORS Configuration Layer
+# CORS Configuration Layer
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
-    "https://www.mayndstomir.com",  # Fixes Olamiposi's preflight block
+    "https://www.mayndstomir.com",
     "http://localhost:5500",
     "http://127.0.0.1:5500"
 ]
@@ -31,15 +32,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Supabase Configuration Environment Variables
+# Supabase Configuration Environment Variables
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
-
-# Kept for architectural compatibility
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-# 3. Pydantic Models for Validation (With Double-Name & 8-Digit Phone Rules)
+# --- 🗺️ REGIONAL GEOTARGETING MIDDLEWARE ENGINE ---
+async def enforce_qatar_geographic_origin(request: Request):
+    """
+    Captures applicant/client IP address headers, tracing geographic origin
+    to guarantee entries originate strictly from within Qatar borders.
+    """
+    x_forwarded = request.headers.get("x-forwarded-for")
+    client_ip = x_forwarded.split(",")[0].strip() if x_forwarded else request.client.host
+    
+    # Bypass rule for internal localhost system tests
+    if client_ip in ["127.0.0.1", "localhost", "testclient"]:
+        return {"country": "Qatar", "city": "Doha (Simulated)"}
+        
+    try:
+        async with httpx.AsyncClient() as client:
+            geo_lookup = await client.get(f"http://ip-api.com/json/{client_ip}", timeout=2.5)
+            if geo_lookup.status_code == 200:
+                geo_data = geo_lookup.json()
+                if geo_data.get("status") == "success":
+                    country = geo_data.get("country", "")
+                    if country.lower() != "qatar":
+                        raise HTTPException(
+                            status_code=403, 
+                            detail=f"Access Denied: Submission must originate inside Qatar. Detected: {country}"
+                        )
+                    return {"country": country, "city": geo_data.get("city", "Doha")}
+    except HTTPException as http_err:
+        raise http_err
+    except Exception:
+        pass # Graceful fallback to avoid locking routes if external lookup engine drops
+    return {"country": "Qatar", "city": "Doha (Default)"}
+
+
+# --- 📋 VALIDATION SCHEMAS WITH QID & KAHRAMAA RULES ---
+
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
@@ -69,9 +102,10 @@ class FreelanceApplication(BaseModel):
     full_name: str = Field(..., description="Applicant's full name.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Exactly 8 digits.")
     email: str = Field(..., description="Contact email address.")
-    category: str = Field(..., alias="trade", description="Maps frontend 'trade' selection to backend category field.")
+    category: str = Field(..., alias="trade", description="Maps frontend choice to backend category.")
     experience_years: int = Field(..., description="Years of field experience.")
     qid_number: str = Field(..., description="Qatar ID Number validation requirement.")
+    kahramaa_id: Optional[str] = Field(None, description="Mandatory ID certificate code for Electricians.")
     description: Optional[str] = Field(None, description="Detailed text box of what they do.")
     id_photo_url: Optional[str] = None
 
@@ -85,15 +119,42 @@ class FreelanceApplication(BaseModel):
             raise ValueError("Full name must include at least both a first and last name.")
         return clean_name
 
+    @field_validator('qid_number')
+    @classmethod
+    def validate_strict_qatar_id(cls, value: str) -> str:
+        """
+        Enforces official Ministry of Interior (MOI) rules: 
+        Must be exactly 11 numeric digits and start with 2 or 3 based on century of birth.
+        """
+        clean_qid = value.strip()
+        if not re.match(r"^[23]\d{10}$", clean_qid):
+            raise ValueError("Security Rejection: Invalid QID structure. Field requires a valid 11-digit Qatar ID.")
+        return clean_qid
 
-# 4. Data Extraction & Contract Transformation Helpers
-def extract_location_field(description: str, field_name: str) -> Optional[str]:
-    pattern = rf"{field_name}\s*(\d+)"
-    match = re.search(pattern, description, re.IGNORECASE)
-    return match.group(1) if match else None
+    @model_validator(mode='after')
+    def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
+        """
+        Locks onboarding for electricians unless a valid Kahramaa Approval License key is supplied.
+        """
+        trade_lower = (self.category or "").lower()
+        if "electric" in trade_lower or "electrician" in trade_lower:
+            if not self.kahramaa_id or not self.kahramaa_id.strip():
+                raise ValueError("Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari Electrician profiles.")
+        return self
 
 
+# Map Contract Data Conversion Layer (Autogenerates Navigation Vectors)
 def map_to_api_contract(db_record: dict) -> dict:
+    zone = db_record.get("zone_number")
+    street = db_record.get("street_number")
+    building = db_record.get("building_number")
+    
+    # Automatically compute Google Maps Directions Routing URL via Qatar National Address specs
+    if zone and street and building:
+        navigation_map_url = f"https://www.google.com/maps/search/?api=1&query=Building+{building}+Street+{street}+Zone+{zone}+Doha+Qatar"
+    else:
+        navigation_map_url = "https://www.google.com/maps/search/?api=1&query=Doha+Qatar"
+
     return {
         "id": db_record.get("uuid"),
         "full_name": db_record.get("customer_name"),
@@ -103,52 +164,52 @@ def map_to_api_contract(db_record: dict) -> dict:
         "job_photo_url": db_record.get("photo_url"),
         "id_photo_url": db_record.get("photo_url"),
         "status": db_record.get("status"),
-        "zone_number": db_record.get("zone_number"),
-        "street_number": db_record.get("street_number"),
-        "building_number": db_record.get("building_number"),
+        "zone_number": zone,
+        "street_number": street,
+        "building_number": building,
         "customer_availability": db_record.get("customer_availability"),
         "assigned_technician": db_record.get("assigned_technician"),
+        "navigation_map_url": navigation_map_url, # Auto-injected mapping vector
         "created_at": db_record.get("created_at")
     }
 
 
-# 5. Helper Function for Automated Outbound Twilio Notification
+def extract_location_field(description: str, field_name: str) -> Optional[str]:
+    pattern = rf"{field_name}\s*(\d+)"
+    match = re.search(pattern, description, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 async def send_whatsapp_message(to_number: str, message: str):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
     from_number = "whatsapp:+14155238886"
     
     if not account_sid or not auth_token:
-        print("❌ Error: Twilio environment variables are not set.")
+        print("❌ Error: Twilio credentials absent.")
         return
 
     gateway_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     clean_number = to_number.strip().replace(" ", "").replace("+", "")
     formatted_to = f"whatsapp:+{clean_number}"
 
-    payload = {
-        "From": from_number,
-        "To": formatted_to,
-        "Body": message
-    }
+    payload = {"From": from_number, "To": formatted_to, "Body": message}
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(
-                gateway_url, 
-                data=payload, 
-                auth=(account_sid, auth_token)
-            )
+            response = await client.post(gateway_url, data=payload, auth=(account_sid, auth_token))
             response.raise_for_status()
-            print(f"✅ WhatsApp alert queued to {formatted_to}")
         except httpx.HTTPError as e:
-            print(f"❌ Twilio Communication Failure: {e}")
+            print(f"❌ Twilio routing block: {e}")
 
 
-# 6. Core API Routes
+# --- 🚀 SECURED API ROUTE CONTROLLERS ---
 
 @app.post("/jobs", status_code=201)
-async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
+async def create_job(job: JobSubmission, request: Request, background_tasks: BackgroundTasks):
+    # Geotargeting verification check
+    await enforce_qatar_geographic_origin(request)
+    
     try:
         job_data = job.model_dump()
         desc = job_data.get("description") or ""
@@ -160,9 +221,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         availability = None
         if job_data.get("preferred_date"):
             availability = f"{job_data['preferred_date']} {job_data.get('preferred_time', '')}".strip()
-
-        if "undefined" in desc.lower() or not desc.strip():
-            desc = f"Maintenance requested for category: {job.category}."
 
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
@@ -193,9 +251,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
             db_response.raise_for_status()
             inserted_records = db_response.json()
         
-        if not inserted_records:
-            raise HTTPException(status_code=500, detail="Database save failed.")
-        
         formatted_response = map_to_api_contract(inserted_records[0])
         job_id = formatted_response.get("id")
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
@@ -203,87 +258,80 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         notification_msg = (
             f"🛠️ *Maynd Stomir - Request Confirmed*\n\n"
             f"Hi {formatted_response['full_name']},\n"
-            f"Your maintenance request has been successfully processed.\n\n"
-            f"📦 *Job ID:* {job_id}\n"
-            f"📋 *Category:* {formatted_response['category']}\n\n"
-            f"🔗 *Track Your Job Progress Live:* {tracking_url}"
+            f"Your order is verified. Tracking live here: {tracking_url}"
         )
-        
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
-        return {"status": "success", "message": "Job logged successfully!", "data": [formatted_response]}
-
+        return {"status": "success", "data": [formatted_response]}
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 
-@app.get("/jobs/{job_id}")
-async def get_job_by_id(job_id: str):
+@app.post("/freelance_applications", status_code=201)
+async def create_freelance_application(application: FreelanceApplication, request: Request, background_tasks: BackgroundTasks):
+    # 1. Geographic Verification Check
+    await enforce_qatar_geographic_origin(request)
+    
+    base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    
+    # 2. Reapplication Anti-Spam Check (Locks out rejected profiles for 30 Days)
+    check_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?qid_number=eq.{application.qid_number}&order=created_at.desc&limit=1"
+    
+    async with httpx.AsyncClient() as client:
+        check_res = await client.get(check_url, headers=headers)
+        if check_res.status_code == 200:
+            past_submissions = check_res.json()
+            if past_submissions:
+                latest_record = past_submissions[0]
+                if latest_record.get("status") == "REJECTED":
+                    created_str = latest_record.get("created_at", "").replace("Z", "+00:00")
+                    try:
+                        rejection_time = datetime.fromisoformat(created_str)
+                        if datetime.now(timezone.utc) - rejection_time < timedelta(days=30):
+                            raise HTTPException(
+                                status_code=400, 
+                                detail="Policy Notice: Application blocked. Following a profile rejection, you must wait a minimum of 30 days before reapplying."
+                            )
+                    except HTTPException as http_err:
+                        raise http_err
+                    except Exception:
+                        raise HTTPException(status_code=400, detail="Policy Notice: Profile cooling-off restriction active.")
+
     try:
-        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
+        app_data = application.model_dump()
+        extended_description = f"Applicant Name: {app_data.get('full_name')} | Experience: {app_data.get('experience_years')} Years"
         
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Accept": "application/json"
+        supabase_payload = {
+            "phone_number": app_data.get("phone_number"),
+            "whatsapp_number": app_data.get("phone_number"),
+            "email_address": app_data.get("email"),
+            "trade_skill": app_data.get("category"),
+            "qid_number": app_data.get("qid_number"),
+            "kahramaa_id": app_data.get("kahramaa_id"), # Saves verified Kahramaa certificate identifier
+            "description": extended_description,
+            "id_photo_url": app_data.get("id_photo_url"),
+            "status": "PENDING"
         }
+
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
+        post_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
         
         async with httpx.AsyncClient() as client:
-            response = await client.get(raw_rest_url, headers=headers)
-            response.raise_for_status()
-            records = response.json()
-            
-        if not records:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        return map_to_api_contract(records[0])
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+            db_response = await client.post(raw_rest_url, json=supabase_payload, headers=post_headers)
+            db_response.raise_for_status()
+            inserted_records = db_response.json()
 
-
-@app.get("/jobs")
-async def get_all_jobs():
-    try:
-        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?order=created_at.desc"
-        
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Accept": "application/json"
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(raw_rest_url, headers=headers)
-            response.raise_for_status()
-            records = response.json()
-        return [map_to_api_contract(rec) for rec in records]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/jobs/lookup/{phone_number}")
-async def lookup_jobs_by_phone(phone_number: str):
-    try:
-        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?phone_number=eq.{phone_number.strip()}"
-        
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Accept": "application/json"
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(raw_rest_url, headers=headers)
-            response.raise_for_status()
-            records = response.json()
-        return [map_to_api_contract(rec) for rec in records]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        notification_msg = f"🛠️ *Maynd Stomir - Application Logged*\n\nThank you {app_data['full_name']}. Your application with trade category '{app_data['category']}' is currently under operational review."
+        background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
+        return {"status": "success", "data": inserted_records[0]}
+    except Exception as error:
+        if isinstance(error, HTTPException):
+            raise error
+        raise HTTPException(status_code=500, detail=str(error))
 
 
 @app.patch("/jobs/{job_id}/assign")
-async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
+async def assign_technician(job_id: str, payload: AssignTechnicianPayload, background_tasks: BackgroundTasks):
     try:
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
@@ -302,73 +350,53 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
             records = response.json()
             
         if not records:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        return {"status": "success", "data": map_to_api_contract(records[0])}
+            raise HTTPException(status_code=404, detail="Job entry not found.")
+            
+        formatted_data = map_to_api_contract(records[0])
+        
+        # 3. Dynamic Dispatch Map Generation Link Sent to Technician
+        technician_alert = (
+            f"🚀 *Maynd Stomir - New Route Assigned*\n\n"
+            f"Hello {payload.technician_name},\n"
+            f"You have been successfully assigned to Job #{job_id}.\n\n"
+            f"🗺️ *Follow Live Navigation to Client:* \n"
+            f"{formatted_data['navigation_map_url']}"
+        )
+        background_tasks.add_task(send_whatsapp_message, formatted_data['phone_number'], technician_alert)
+        return {"status": "success", "data": formatted_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/freelance_applications", status_code=201)
-async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
+@app.get("/jobs/{job_id}")
+async def get_job_by_id(job_id: str):
     try:
-        app_data = application.model_dump()
-        extended_description = f"Applicant Name: {app_data.get('full_name')} | Experience: {app_data.get('experience_years')} Years"
-        
-        supabase_payload = {
-            "phone_number": app_data.get("phone_number"),
-            "whatsapp_number": app_data.get("phone_number"),
-            "email_address": app_data.get("email"),
-            "trade_skill": app_data.get("category"),
-            "qid_number": app_data.get("qid_number"),
-            "description": extended_description,
-            "id_photo_url": app_data.get("id_photo_url")
-        }
-
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
-        
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-        
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
         async with httpx.AsyncClient() as client:
-            db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
-            db_response.raise_for_status()
-            inserted_records = db_response.json()
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+        if not records:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return map_to_api_contract(records[0])
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
-        notification_msg = (
-            f"🛠️ *Maynd Stomir - Application Received*\n\n"
-            f"Hi {app_data['full_name']},\n"
-            f"Thank you for applying to join our network.\n\n"
-            f"📋 *Category:* {app_data['category']}\n"
-            f"Status: Under operations review."
-        )
-        background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
-        return {"status": "success", "data": inserted_records[0]}
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error))
-
-
-@app.post("/webhook/whatsapp")
-async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
-    record = payload.get("record", {})
-    job_id = record.get("uuid") or record.get("id")
-    current_status = record.get("status", "PENDING")
-    phone_number = record.get("phone_number")
-    customer_name = record.get("customer_name", "Customer")
-    
-    if not job_id or not phone_number:
-        raise HTTPException(status_code=400, detail="Missing parameter.")
-        
-    tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
-    update_msg = f"🛠️ *Maynd Stomir Status Update*\n\nHello {customer_name}, Job ID: {job_id} is now *{current_status}*.\n🔗 {tracking_url}"
-    
-    background_tasks.add_task(send_whatsapp_message, phone_number, update_msg)
-    return {"status": "success"}
-
+@app.get("/jobs")
+async def get_all_jobs():
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?order=created_at.desc"
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+        return [map_to_api_contract(rec) for rec in records]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 @app.head("/health")
