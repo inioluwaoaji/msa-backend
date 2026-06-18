@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.5.0"
+    version="2.7.0"
 )
 
 # CORS Configuration Layer
@@ -47,7 +47,6 @@ async def enforce_qatar_geographic_origin(request: Request):
     x_forwarded = request.headers.get("x-forwarded-for")
     client_ip = x_forwarded.split(",")[0].strip() if x_forwarded else request.client.host
     
-    # Bypass rule for internal localhost system tests
     if client_ip in ["127.0.0.1", "localhost", "testclient"]:
         return {"country": "Qatar", "city": "Doha (Simulated)"}
         
@@ -67,7 +66,7 @@ async def enforce_qatar_geographic_origin(request: Request):
     except HTTPException as http_err:
         raise http_err
     except Exception:
-        pass # Graceful fallback to avoid locking routes if external lookup engine drops
+        pass
     return {"country": "Qatar", "city": "Doha (Default)"}
 
 
@@ -105,7 +104,7 @@ class FreelanceApplication(BaseModel):
     category: str = Field(..., alias="trade", description="Maps frontend choice to backend category.")
     experience_years: int = Field(..., description="Years of field experience.")
     qid_number: str = Field(..., description="Qatar ID Number validation requirement.")
-    kahramaa_id: Optional[str] = Field(None, description="Mandatory ID certificate code for Electricians.")
+    kahramaa_id: Optional[str] = Field(None, description="Mandatory ID certificate code for Electricians and Plumbers.")
     description: Optional[str] = Field(None, description="Detailed text box of what they do.")
     id_photo_url: Optional[str] = None
 
@@ -122,10 +121,6 @@ class FreelanceApplication(BaseModel):
     @field_validator('qid_number')
     @classmethod
     def validate_strict_qatar_id(cls, value: str) -> str:
-        """
-        Enforces official Ministry of Interior (MOI) rules: 
-        Must be exactly 11 numeric digits and start with 2 or 3 based on century of birth.
-        """
         clean_qid = value.strip()
         if not re.match(r"^[23]\d{10}$", clean_qid):
             raise ValueError("Security Rejection: Invalid QID structure. Field requires a valid 11-digit Qatar ID.")
@@ -134,12 +129,12 @@ class FreelanceApplication(BaseModel):
     @model_validator(mode='after')
     def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
         """
-        Locks onboarding for electricians unless a valid Kahramaa Approval License key is supplied.
+        Locks onboarding for electricians AND plumbers unless a valid Kahramaa Approval License key is supplied.
         """
         trade_lower = (self.category or "").lower()
-        if "electric" in trade_lower or "electrician" in trade_lower:
+        if any(keyword in trade_lower for keyword in ["electric", "plumb"]):
             if not self.kahramaa_id or not self.kahramaa_id.strip():
-                raise ValueError("Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari Electrician profiles.")
+                raise ValueError("Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari Electrician and Plumber profiles.")
         return self
 
 
@@ -149,7 +144,6 @@ def map_to_api_contract(db_record: dict) -> dict:
     street = db_record.get("street_number")
     building = db_record.get("building_number")
     
-    # Automatically compute Google Maps Directions Routing URL via Qatar National Address specs
     if zone and street and building:
         navigation_map_url = f"https://www.google.com/maps/search/?api=1&query=Building+{building}+Street+{street}+Zone+{zone}+Doha+Qatar"
     else:
@@ -169,7 +163,7 @@ def map_to_api_contract(db_record: dict) -> dict:
         "building_number": building,
         "customer_availability": db_record.get("customer_availability"),
         "assigned_technician": db_record.get("assigned_technician"),
-        "navigation_map_url": navigation_map_url, # Auto-injected mapping vector
+        "navigation_map_url": navigation_map_url,
         "created_at": db_record.get("created_at")
     }
 
@@ -207,9 +201,7 @@ async def send_whatsapp_message(to_number: str, message: str):
 
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, request: Request, background_tasks: BackgroundTasks):
-    # Geotargeting verification check
     await enforce_qatar_geographic_origin(request)
-    
     try:
         job_data = job.model_dump()
         desc = job_data.get("description") or ""
@@ -268,13 +260,11 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
 
 @app.post("/freelance_applications", status_code=201)
 async def create_freelance_application(application: FreelanceApplication, request: Request, background_tasks: BackgroundTasks):
-    # 1. Geographic Verification Check
     await enforce_qatar_geographic_origin(request)
-    
     base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     
-    # 2. Reapplication Anti-Spam Check (Locks out rejected profiles for 30 Days)
+    # Reapplication Anti-Spam Check (Locks out rejected profiles for 30 Days)
     check_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?qid_number=eq.{application.qid_number}&order=created_at.desc&limit=1"
     
     async with httpx.AsyncClient() as client:
@@ -307,7 +297,7 @@ async def create_freelance_application(application: FreelanceApplication, reques
             "email_address": app_data.get("email"),
             "trade_skill": app_data.get("category"),
             "qid_number": app_data.get("qid_number"),
-            "kahramaa_id": app_data.get("kahramaa_id"), # Saves verified Kahramaa certificate identifier
+            "kahramaa_id": app_data.get("kahramaa_id"),
             "description": extended_description,
             "id_photo_url": app_data.get("id_photo_url"),
             "status": "PENDING"
@@ -354,7 +344,6 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload, backg
             
         formatted_data = map_to_api_contract(records[0])
         
-        # 3. Dynamic Dispatch Map Generation Link Sent to Technician
         technician_alert = (
             f"🚀 *Maynd Stomir - New Route Assigned*\n\n"
             f"Hello {payload.technician_name},\n"
@@ -366,6 +355,36 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload, backg
         return {"status": "success", "data": formatted_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- 👥 DYNAMIC ONE-TIME LINK ACTIVATION GATEWAY ---
+@app.post("/webhook/freelancer_status")
+async def update_freelancer_status_webhook(payload: dict, background_tasks: BackgroundTasks):
+    """
+    Listens for application status conversions to 'APPROVED'.
+    Generates a secure, individual confirmation link.
+    """
+    record = payload.get("record", {})
+    new_status = record.get("status", "PENDING")
+    phone_number = record.get("phone_number")
+    worker_name = record.get("full_name") or "Technician"
+    freelancer_id = record.get("uuid") or record.get("id") or "token"
+    
+    if new_status == "APPROVED" and phone_number:
+        # Generates a dynamic confirmation route specific to their unique database key
+        secure_one_time_url = f"https://mayndstomir.com/verify-onboard.html?id={freelancer_id}"
+        
+        onboarding_msg = (
+            f"🎉 *Welcome to Maynd Stomir, {worker_name}!*\n\n"
+            f"Your profile has been officially verified and approved.\n\n"
+            f"⚠️ *Secure One-Time Onboarding Invite Link:* \n"
+            f"Click the link below to confirm your account and join your localized team cluster. "
+            f"For security, this link is uniquely tied to your profile and will stop working once activated:\n"
+            f"{secure_one_time_url}"
+        )
+        background_tasks.add_task(send_whatsapp_message, phone_number, onboarding_msg)
+        
+    return {"status": "processed"}
 
 
 @app.get("/jobs/{job_id}")
