@@ -3,7 +3,7 @@ import re
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List
 from supabase import create_client, Client
 
@@ -11,14 +11,14 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.4.3"
+    version="2.4.5"
 )
 
-# 1. Complete CORS Configuration Layer (Includes Olamiposi's domain combinations)
+# 1. Complete CORS Configuration Layer
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
-    "https://www.mayndstomir.com",  # Added to resolve the browser preflight block
+    "https://www.mayndstomir.com",  # Fixes Olamiposi's preflight block
     "http://localhost:5500",
     "http://127.0.0.1:5500"
 ]
@@ -35,14 +35,11 @@ app.add_middleware(
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("⚠️ WARNING: Missing Supabase Environment Variables!")
-
 # Kept for architectural compatibility
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-# 3. Pydantic Models for Validation
+# 3. Pydantic Models for Validation (With Double-Name & 8-Digit Phone Rules)
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
@@ -54,6 +51,14 @@ class JobSubmission(BaseModel):
     job_photo_url: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_validator('full_name')
+    @classmethod
+    def validate_double_name(cls, value: str) -> str:
+        clean_name = value.strip()
+        if len(clean_name.split()) < 2:
+            raise ValueError("Full name must include at least both a first and last name as shown on the QID.")
+        return clean_name
 
 
 class AssignTechnicianPayload(BaseModel):
@@ -71,6 +76,14 @@ class FreelanceApplication(BaseModel):
     id_photo_url: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @field_validator('full_name')
+    @classmethod
+    def validate_double_name(cls, value: str) -> str:
+        clean_name = value.strip()
+        if len(clean_name.split()) < 2:
+            raise ValueError("Full name must include at least both a first and last name.")
+        return clean_name
 
 
 # 4. Data Extraction & Contract Transformation Helpers
@@ -106,11 +119,10 @@ async def send_whatsapp_message(to_number: str, message: str):
     from_number = "whatsapp:+14155238886"
     
     if not account_sid or not auth_token:
-        print("❌ Error: Twilio environment variables (SID/TOKEN) are not set.")
+        print("❌ Error: Twilio environment variables are not set.")
         return
 
     gateway_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-    
     clean_number = to_number.strip().replace(" ", "").replace("+", "")
     formatted_to = f"whatsapp:+{clean_number}"
 
@@ -125,17 +137,15 @@ async def send_whatsapp_message(to_number: str, message: str):
             response = await client.post(
                 gateway_url, 
                 data=payload, 
-                auth=(account_sid, account_sid if not auth_token else auth_token)
+                auth=(account_sid, auth_token)
             )
             response.raise_for_status()
-            print(f"✅ WhatsApp alert successfully queued via Twilio to {formatted_to}")
+            print(f"✅ WhatsApp alert queued to {formatted_to}")
         except httpx.HTTPError as e:
             print(f"❌ Twilio Communication Failure: {e}")
 
 
 # 6. Core API Routes
-
-# --- CUSTOMER JOB PIPELINE ---
 
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
@@ -188,7 +198,6 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         
         formatted_response = map_to_api_contract(inserted_records[0])
         job_id = formatted_response.get("id")
-        
         tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
         
         notification_msg = (
@@ -201,15 +210,9 @@ async def create_job(job: JobSubmission, background_tasks: BackgroundTasks):
         )
         
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
-        
-        return {
-            "status": "success",
-            "message": "Job logged successfully into Supabase!",
-            "data": [formatted_response]
-        }
+        return {"status": "success", "message": "Job logged successfully!", "data": [formatted_response]}
 
     except Exception as error:
-        print(f"POST /jobs error exception: {str(error)}")
         raise HTTPException(status_code=500, detail=str(error))
 
 
@@ -232,10 +235,9 @@ async def get_job_by_id(job_id: str):
             
         if not records:
             raise HTTPException(status_code=404, detail="Job not found.")
-            
         return map_to_api_contract(records[0])
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Job lookup execution tracing failure: {str(e)}")
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/jobs")
@@ -254,10 +256,9 @@ async def get_all_jobs():
             response = await client.get(raw_rest_url, headers=headers)
             response.raise_for_status()
             records = response.json()
-            
         return [map_to_api_contract(rec) for rec in records]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Global job stream extraction halted: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/jobs/lookup/{phone_number}")
@@ -276,10 +277,9 @@ async def lookup_jobs_by_phone(phone_number: str):
             response = await client.get(raw_rest_url, headers=headers)
             response.raise_for_status()
             records = response.json()
-            
         return [map_to_api_contract(rec) for rec in records]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Phone indexing stream execution failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.patch("/jobs/{job_id}/assign")
@@ -294,11 +294,7 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
             "Content-Type": "application/json",
             "Prefer": "return=representation"
         }
-        
-        update_data = {
-            "assigned_technician": payload.technician_name,
-            "status": "ASSIGNED"
-        }
+        update_data = {"assigned_technician": payload.technician_name, "status": "ASSIGNED"}
         
         async with httpx.AsyncClient() as client:
             response = await client.patch(raw_rest_url, json=update_data, headers=headers)
@@ -306,25 +302,17 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload):
             records = response.json()
             
         if not records:
-            raise HTTPException(status_code=404, detail="Target tracking reference non-existent.")
-            
-        return {"status": "success", "message": "Technician assignment mapped.", "data": map_to_api_contract(records[0])}
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return {"status": "success", "data": map_to_api_contract(records[0])}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Technician process allocation breakdown: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# --- FREELANCE ONBOARDING PIPELINE ---
 
 @app.post("/freelance_applications", status_code=201)
 async def create_freelance_application(application: FreelanceApplication, background_tasks: BackgroundTasks):
     try:
         app_data = application.model_dump()
-        
-        extended_description = (
-            f"Applicant Name: {app_data.get('full_name')} | "
-            f"Experience: {app_data.get('experience_years')} Years | "
-            f"Details: {app_data.get('description') or 'None provided.'}"
-        )
+        extended_description = f"Applicant Name: {app_data.get('full_name')} | Experience: {app_data.get('experience_years')} Years"
         
         supabase_payload = {
             "phone_number": app_data.get("phone_number"),
@@ -350,31 +338,19 @@ async def create_freelance_application(application: FreelanceApplication, backgr
             db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
             db_response.raise_for_status()
             inserted_records = db_response.json()
-            
-        if not inserted_records:
-            raise HTTPException(status_code=500, detail="Failed to log freelance application data.")
 
         notification_msg = (
             f"🛠️ *Maynd Stomir - Application Received*\n\n"
             f"Hi {app_data['full_name']},\n"
-            f"Thank you for applying to join our network as a freelance technician.\n\n"
+            f"Thank you for applying to join our network.\n\n"
             f"📋 *Category:* {app_data['category']}\n"
-            f"Status: Our operations team is currently reviewing your credentials. We will be in touch shortly!"
+            f"Status: Under operations review."
         )
         background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
-
-        return {
-            "status": "success",
-            "message": "Freelance application submitted successfully!",
-            "data": inserted_records[0]
-        }
-
+        return {"status": "success", "data": inserted_records[0]}
     except Exception as error:
-        print(f"POST /freelance_applications error: {str(error)}")
-        raise HTTPException(status_code=500, detail=f"Application intake pipeline failed: {str(error)}")
+        raise HTTPException(status_code=500, detail=str(error))
 
-
-# --- GLOBAL SYSTEM ENDPOINTS ---
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTasks):
@@ -385,22 +361,15 @@ async def whatsapp_status_webhook(payload: dict, background_tasks: BackgroundTas
     customer_name = record.get("customer_name", "Customer")
     
     if not job_id or not phone_number:
-        raise HTTPException(status_code=400, detail="Missing operational webhook parameters.")
+        raise HTTPException(status_code=400, detail="Missing parameter.")
         
     tracking_url = f"https://maynd-stomir.vercel.app/status.html?id={job_id}"
-    
-    update_msg = (
-        f"🛠️ *Maynd Stomir Status Update*\n\n"
-        f"Hello {customer_name},\n"
-        f"The status of your maintenance request (Job ID: {job_id}) has changed to: *{current_status}*.\n\n"
-        f"👉 *Monitor live technician updates here:* {tracking_url}"
-    )
+    update_msg = f"🛠️ *Maynd Stomir Status Update*\n\nHello {customer_name}, Job ID: {job_id} is now *{current_status}*.\n🔗 {tracking_url}"
     
     background_tasks.add_task(send_whatsapp_message, phone_number, update_msg)
-    return {"status": "success", "message": "WhatsApp tracking status dispatch processed."}
+    return {"status": "success"}
 
 
-# Patched health route to support both GET and free-tier HEAD requests
 @app.get("/health")
 @app.head("/health")
 async def health_check():
