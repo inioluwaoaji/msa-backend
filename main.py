@@ -11,13 +11,14 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.4.2"
+    version="2.4.3"
 )
 
-# 1. CORS Configuration Layer
+# 1. Complete CORS Configuration Layer (Includes Olamiposi's domain combinations)
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
+    "https://www.mayndstomir.com",  # Added to resolve the browser preflight block
     "http://localhost:5500",
     "http://127.0.0.1:5500"
 ]
