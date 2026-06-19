@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.7.0"
+    version="2.8.0"
 )
 
 # CORS Configuration Layer
@@ -37,13 +37,12 @@ SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# 🌐 ACTUAL WHATSAPP GROUP INVITE LINK FOR VERIFIED TECHNICIANS
+ACTUAL_WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/Dx3TDUz1WsMJc1qaUJ4RNo"
+
 
 # --- 🗺️ REGIONAL GEOTARGETING MIDDLEWARE ENGINE ---
 async def enforce_qatar_geographic_origin(request: Request):
-    """
-    Captures applicant/client IP address headers, tracing geographic origin
-    to guarantee entries originate strictly from within Qatar borders.
-    """
     x_forwarded = request.headers.get("x-forwarded-for")
     client_ip = x_forwarded.split(",")[0].strip() if x_forwarded else request.client.host
     
@@ -128,9 +127,6 @@ class FreelanceApplication(BaseModel):
 
     @model_validator(mode='after')
     def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
-        """
-        Locks onboarding for electricians AND plumbers unless a valid Kahramaa Approval License key is supplied.
-        """
         trade_lower = (self.category or "").lower()
         if any(keyword in trade_lower for keyword in ["electric", "plumb"]):
             if not self.kahramaa_id or not self.kahramaa_id.strip():
@@ -138,7 +134,6 @@ class FreelanceApplication(BaseModel):
         return self
 
 
-# Map Contract Data Conversion Layer (Autogenerates Navigation Vectors)
 def map_to_api_contract(db_record: dict) -> dict:
     zone = db_record.get("zone_number")
     street = db_record.get("street_number")
@@ -258,13 +253,41 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         raise HTTPException(status_code=500, detail=str(error))
 
 
+# 🔍 FIX: Dynamic Phone Number Lookup Route with Format Normalization
+@app.get("/jobs/lookup/{phone_number}")
+async def lookup_job_by_phone(phone_number: str):
+    try:
+        # Strip prefixes like +974 or 00974 to get the raw 8-digit local number
+        clean_phone = phone_number.strip().replace(" ", "").replace("+", "")
+        if clean_phone.startswith("974") and len(clean_phone) > 8:
+            clean_phone = clean_phone[3:]
+            
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        # Query database checking both raw input and normalized variants
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?phone_number=eq.{clean_phone}&order=created_at.desc"
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(raw_rest_url, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+            
+        if not records:
+            raise HTTPException(status_code=404, detail="No active service tickets found under this phone number.")
+            
+        return [map_to_api_contract(rec) for rec in records]
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/freelance_applications", status_code=201)
 async def create_freelance_application(application: FreelanceApplication, request: Request, background_tasks: BackgroundTasks):
     await enforce_qatar_geographic_origin(request)
     base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     
-    # Reapplication Anti-Spam Check (Locks out rejected profiles for 30 Days)
     check_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?qid_number=eq.{application.qid_number}&order=created_at.desc&limit=1"
     
     async with httpx.AsyncClient() as client:
@@ -300,7 +323,8 @@ async def create_freelance_application(application: FreelanceApplication, reques
             "kahramaa_id": app_data.get("kahramaa_id"),
             "description": extended_description,
             "id_photo_url": app_data.get("id_photo_url"),
-            "status": "PENDING"
+            "status": "PENDING",
+            "link_used": False  # Pre-initializes token state for onboarding security
         }
 
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
@@ -357,13 +381,8 @@ async def assign_technician(job_id: str, payload: AssignTechnicianPayload, backg
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- 👥 DYNAMIC ONE-TIME LINK ACTIVATION GATEWAY ---
 @app.post("/webhook/freelancer_status")
 async def update_freelancer_status_webhook(payload: dict, background_tasks: BackgroundTasks):
-    """
-    Listens for application status conversions to 'APPROVED'.
-    Generates a secure, individual confirmation link.
-    """
     record = payload.get("record", {})
     new_status = record.get("status", "PENDING")
     phone_number = record.get("phone_number")
@@ -371,7 +390,6 @@ async def update_freelancer_status_webhook(payload: dict, background_tasks: Back
     freelancer_id = record.get("uuid") or record.get("id") or "token"
     
     if new_status == "APPROVED" and phone_number:
-        # Generates a dynamic confirmation route specific to their unique database key
         secure_one_time_url = f"https://mayndstomir.com/verify-onboard.html?id={freelancer_id}"
         
         onboarding_msg = (
@@ -385,6 +403,55 @@ async def update_freelancer_status_webhook(payload: dict, background_tasks: Back
         background_tasks.add_task(send_whatsapp_message, phone_number, onboarding_msg)
         
     return {"status": "processed"}
+
+
+# 🔑 FIX: Secure One-Time Onboarding Verification Endpoint with State-Tracking
+@app.post("/workers/{id}/verify")
+async def verify_one_time_link(id: str):
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Accept": "application/json"
+        }
+        
+        # 1. Fetch current freelancer registration record
+        lookup_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
+        async with httpx.AsyncClient() as client:
+            res = await client.get(lookup_url, headers=headers)
+            res.raise_for_status()
+            records = res.json()
+            
+        if not records:
+            raise HTTPException(status_code=404, detail="Invalid token session identifier.")
+            
+        record = records[0]
+        
+        # 2. Enforce strict link reuse safety rules
+        if record.get("link_used") is True:
+            raise HTTPException(status_code=410, detail="This security invite link has already been used and has expired.")
+            
+        if record.get("status") != "APPROVED":
+            raise HTTPException(status_code=403, detail="Access Denied: Profile application state is unverified.")
+
+        # 3. Mark link spent inside database state machine
+        update_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
+        update_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
+        async with httpx.AsyncClient() as client:
+            patch_res = await client.patch(update_url, json={"link_used": True}, headers=update_headers)
+            patch_res.raise_for_status()
+
+        # 4. Return success along with the private WhatsApp destination vector
+        return {
+            "status": "verified",
+            "message": "Authentication successful.",
+            "whatsapp_group_url": ACTUAL_WHATSAPP_GROUP_URL
+        }
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/jobs/{job_id}")
