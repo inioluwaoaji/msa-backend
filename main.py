@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.8.0"
+    version="2.9.0"
 )
 
 # CORS Configuration Layer
@@ -69,13 +69,13 @@ async def enforce_qatar_geographic_origin(request: Request):
     return {"country": "Qatar", "city": "Doha (Default)"}
 
 
-# --- 📋 VALIDATION SCHEMAS WITH QID & KAHRAMAA RULES ---
+# --- 📋 VALIDATION SCHEMAS WITH CONSOLIDATED OPTIONS ---
 
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
     description: str
-    category: str
+    category: str  # Validated against image_b00fa5.png values
     preferred_date: str
     preferred_time: str
     id_photo_url: Optional[str] = None
@@ -90,6 +90,20 @@ class JobSubmission(BaseModel):
         if len(clean_name.split()) < 2:
             raise ValueError("Full name must include at least both a first and last name as shown on the QID.")
         return clean_name
+
+    @field_validator('category')
+    @classmethod
+    def validate_customer_problem_category(cls, value: str) -> str:
+        # Strict validation based on the 13 options in image_b00fa5.png
+        valid_options = {
+            "hvac", "plumbing", "electrical", "painting", "carpentry", 
+            "flooring", "appliance_repair", "pest_control", "cleaning", 
+            "masonry", "glass_windows", "locks_security", "other"
+        }
+        clean_val = value.strip().lower()
+        if clean_val not in valid_options:
+            raise ValueError(f"Invalid problem category submission: {value}")
+        return clean_val
 
 
 class AssignTechnicianPayload(BaseModel):
@@ -125,10 +139,24 @@ class FreelanceApplication(BaseModel):
             raise ValueError("Security Rejection: Invalid QID structure. Field requires a valid 11-digit Qatar ID.")
         return clean_qid
 
+    @field_validator('category')
+    @classmethod
+    def validate_technician_trade_category(cls, value: str) -> str:
+        # Strict validation based on the 8 options in image_b00f2c.png
+        valid_options = {
+            "hvac", "plumbing", "electrical", "carpentry", 
+            "appliance_repair", "cleaning", "masonry", "other"
+        }
+        clean_val = value.strip().lower()
+        if clean_val not in valid_options:
+            raise ValueError(f"Invalid technician trade selection: {value}")
+        return clean_val
+
     @model_validator(mode='after')
     def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
         trade_lower = (self.category or "").lower()
-        if any(keyword in trade_lower for keyword in ["electric", "plumb"]):
+        # Electrician or Plumber rules still apply cleanly matching "electrical" and "plumbing" values
+        if trade_lower in ["electrical", "plumbing"]:
             if not self.kahramaa_id or not self.kahramaa_id.strip():
                 raise ValueError("Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari Electrician and Plumber profiles.")
         return self
@@ -253,17 +281,14 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         raise HTTPException(status_code=500, detail=str(error))
 
 
-# 🔍 FIX: Dynamic Phone Number Lookup Route with Format Normalization
 @app.get("/jobs/lookup/{phone_number}")
 async def lookup_job_by_phone(phone_number: str):
     try:
-        # Strip prefixes like +974 or 00974 to get the raw 8-digit local number
         clean_phone = phone_number.strip().replace(" ", "").replace("+", "")
         if clean_phone.startswith("974") and len(clean_phone) > 8:
             clean_phone = clean_phone[3:]
             
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        # Query database checking both raw input and normalized variants
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?phone_number=eq.{clean_phone}&order=created_at.desc"
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
         
@@ -324,7 +349,7 @@ async def create_freelance_application(application: FreelanceApplication, reques
             "description": extended_description,
             "id_photo_url": app_data.get("id_photo_url"),
             "status": "PENDING",
-            "link_used": False  # Pre-initializes token state for onboarding security
+            "link_used": False
         }
 
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
@@ -405,7 +430,6 @@ async def update_freelancer_status_webhook(payload: dict, background_tasks: Back
     return {"status": "processed"}
 
 
-# 🔑 FIX: Secure One-Time Onboarding Verification Endpoint with State-Tracking
 @app.post("/workers/{id}/verify")
 async def verify_one_time_link(id: str):
     try:
@@ -416,7 +440,6 @@ async def verify_one_time_link(id: str):
             "Accept": "application/json"
         }
         
-        # 1. Fetch current freelancer registration record
         lookup_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
         async with httpx.AsyncClient() as client:
             res = await client.get(lookup_url, headers=headers)
@@ -428,21 +451,18 @@ async def verify_one_time_link(id: str):
             
         record = records[0]
         
-        # 2. Enforce strict link reuse safety rules
         if record.get("link_used") is True:
             raise HTTPException(status_code=410, detail="This security invite link has already been used and has expired.")
             
         if record.get("status") != "APPROVED":
             raise HTTPException(status_code=403, detail="Access Denied: Profile application state is unverified.")
 
-        # 3. Mark link spent inside database state machine
         update_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
         update_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
         async with httpx.AsyncClient() as client:
             patch_res = await client.patch(update_url, json={"link_used": True}, headers=update_headers)
             patch_res.raise_for_status()
 
-        # 4. Return success along with the private WhatsApp destination vector
         return {
             "status": "verified",
             "message": "Authentication successful.",
