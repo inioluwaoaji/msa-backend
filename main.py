@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.9.0"
+    version="2.10.0"
 )
 
 # CORS Configuration Layer
@@ -69,13 +69,14 @@ async def enforce_qatar_geographic_origin(request: Request):
     return {"country": "Qatar", "city": "Doha (Default)"}
 
 
-# --- 📋 VALIDATION SCHEMAS WITH CONSOLIDATED OPTIONS ---
+# --- 📋 VALIDATION SCHEMAS ---
 
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
+    email: Optional[str] = Field(None, description="Customer intake email field added per request.") # 🌟 ADDED: Customer Email Support
     description: str
-    category: str  # Validated against image_b00fa5.png values
+    category: str  
     preferred_date: str
     preferred_time: str
     id_photo_url: Optional[str] = None
@@ -94,7 +95,6 @@ class JobSubmission(BaseModel):
     @field_validator('category')
     @classmethod
     def validate_customer_problem_category(cls, value: str) -> str:
-        # Strict validation based on the 13 options in image_b00fa5.png
         valid_options = {
             "hvac", "plumbing", "electrical", "painting", "carpentry", 
             "flooring", "appliance_repair", "pest_control", "cleaning", 
@@ -117,7 +117,7 @@ class FreelanceApplication(BaseModel):
     category: str = Field(..., alias="trade", description="Maps frontend choice to backend category.")
     experience_years: int = Field(..., description="Years of field experience.")
     qid_number: str = Field(..., description="Qatar ID Number validation requirement.")
-    kahramaa_id: Optional[str] = Field(None, description="Mandatory ID certificate code for Electricians and Plumbers.")
+    kahramaa_id: Optional[str] = Field(None, description="Mandatory ID certificate code for Electricians, Plumbers, and HVAC technicians.")
     description: Optional[str] = Field(None, description="Detailed text box of what they do.")
     id_photo_url: Optional[str] = None
 
@@ -142,7 +142,6 @@ class FreelanceApplication(BaseModel):
     @field_validator('category')
     @classmethod
     def validate_technician_trade_category(cls, value: str) -> str:
-        # Strict validation based on the 8 options in image_b00f2c.png
         valid_options = {
             "hvac", "plumbing", "electrical", "carpentry", 
             "appliance_repair", "cleaning", "masonry", "other"
@@ -155,10 +154,10 @@ class FreelanceApplication(BaseModel):
     @model_validator(mode='after')
     def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
         trade_lower = (self.category or "").lower()
-        # Electrician or Plumber rules still apply cleanly matching "electrical" and "plumbing" values
-        if trade_lower in ["electrical", "plumbing"]:
+        # 🌟 UPDATED: Enforces Kahramaa certification rule if trade is electrical, plumbing, OR hvac
+        if trade_lower in ["electrical", "plumbing", "hvac"]:
             if not self.kahramaa_id or not self.kahramaa_id.strip():
-                raise ValueError("Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari Electrician and Plumber profiles.")
+                raise ValueError(f"Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari {trade_lower.upper()} profiles.")
         return self
 
 
@@ -176,6 +175,7 @@ def map_to_api_contract(db_record: dict) -> dict:
         "id": db_record.get("uuid"),
         "full_name": db_record.get("customer_name"),
         "phone_number": db_record.get("phone_number"),
+        "email": db_record.get("email"), # 🌟 Included in outbound API response mapping
         "category": db_record.get("category") or db_record.get("problem_category"),
         "description": db_record.get("description"),
         "job_photo_url": db_record.get("photo_url"),
@@ -240,6 +240,7 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
             "phone_number": job_data.get("phone_number"),
+            "email": job_data.get("email"), # 🌟 Maps the incoming payload to your Supabase schema
             "category": job_data.get("category"),
             "problem_category": job_data.get("category"),
             "description": desc,
