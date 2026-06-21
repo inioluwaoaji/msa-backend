@@ -10,7 +10,7 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="Maynd Stomir Backend API",
-    version="2.12.2"
+    version="2.12.3"
 )
 
 # CORS Layer Configuration
@@ -224,9 +224,17 @@ async def lookup_job_by_phone(phone_number: str):
         clean_phone = phone_number.strip().replace(" ", "").replace("+", "")
         base_phone = clean_phone[3:] if (clean_phone.startswith("974") and len(clean_phone) > 8) else clean_phone
         prefixed_phone = f"974{base_phone}"
+        literal_plus_phone = f"+974{base_phone}"
         
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?or=(phone_number.eq.{base_phone},phone_number.eq.{prefixed_phone})&order=created_at.desc"
+        # Multi-format fallback matching accounts for literal '+' characters present inside database schemas
+        raw_rest_url = (
+            f"{base_url.rstrip('/')}/rest/v1/jobs?or=("
+            f"phone_number.eq.{base_phone},"
+            f"phone_number.eq.{prefixed_phone},"
+            f"phone_number.eq.{literal_plus_phone}"
+            f")&order=created_at.desc"
+        )
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
         
         async with httpx.AsyncClient() as client:
@@ -274,13 +282,12 @@ async def create_freelance_application(application: FreelanceApplication, reques
     try:
         app_data = application.model_dump()
         
-        # We explicitly balance column strategies to cover both possible column variations 
+        # Fixed: Completely removed the non-existent 'email' property to prevent schema cache invalidation faults
         supabase_payload = {
             "full_name": app_data.get("full_name"),
             "phone_number": app_data.get("phone_number"),
             "whatsapp_number": app_data.get("phone_number"),
             "email_address": app_data.get("email"),
-            "email": app_data.get("email"),
             "trade": app_data.get("trade"),
             "trade_skill": app_data.get("trade"),
             "experience_years": app_data.get("experience_years"),
@@ -298,7 +305,6 @@ async def create_freelance_application(application: FreelanceApplication, reques
         async with httpx.AsyncClient() as client:
             db_response = await client.post(raw_rest_url, json=supabase_payload, headers=post_headers)
             if db_response.status_code >= 400:
-                # Expose specific database error reason directly to track down field constraint blocks
                 raise HTTPException(status_code=db_response.status_code, detail=f"Supabase write error: {db_response.text}")
             inserted_records = db_response.json()
 
