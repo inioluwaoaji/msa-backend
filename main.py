@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.10.0"
+    version="2.11.0"
 )
 
 # CORS Configuration Layer
@@ -74,7 +74,7 @@ async def enforce_qatar_geographic_origin(request: Request):
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
     phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
-    email: Optional[str] = Field(None, description="Customer intake email field added per request.") # 🌟 ADDED: Customer Email Support
+    email: Optional[str] = Field(None, description="Customer intake email field.")
     description: str
     category: str  
     preferred_date: str
@@ -154,7 +154,6 @@ class FreelanceApplication(BaseModel):
     @model_validator(mode='after')
     def enforce_kahramaa_approval_gate(self) -> 'FreelanceApplication':
         trade_lower = (self.category or "").lower()
-        # 🌟 UPDATED: Enforces Kahramaa certification rule if trade is electrical, plumbing, OR hvac
         if trade_lower in ["electrical", "plumbing", "hvac"]:
             if not self.kahramaa_id or not self.kahramaa_id.strip():
                 raise ValueError(f"Regulatory Restriction: Valid Kahramaa Approval status is mandatory for all Qatari {trade_lower.upper()} profiles.")
@@ -175,7 +174,7 @@ def map_to_api_contract(db_record: dict) -> dict:
         "id": db_record.get("uuid"),
         "full_name": db_record.get("customer_name"),
         "phone_number": db_record.get("phone_number"),
-        "email": db_record.get("email"), # 🌟 Included in outbound API response mapping
+        "email": db_record.get("email"),
         "category": db_record.get("category") or db_record.get("problem_category"),
         "description": db_record.get("description"),
         "job_photo_url": db_record.get("photo_url"),
@@ -237,10 +236,11 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         if job_data.get("preferred_date"):
             availability = f"{job_data['preferred_date']} {job_data.get('preferred_time', '')}".strip()
 
+        # Build clean payload to eliminate potential multi-mapping schema mismatches
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
             "phone_number": job_data.get("phone_number"),
-            "email": job_data.get("email"), # 🌟 Maps the incoming payload to your Supabase schema
+            "email": job_data.get("email"),
             "category": job_data.get("category"),
             "problem_category": job_data.get("category"),
             "description": desc,
@@ -279,7 +279,11 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         return {"status": "success", "data": [formatted_response]}
     except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error))
+        # Pull detailed response text from internal HTTP client errors if available for faster diagnostic debugging
+        error_detail = str(error)
+        if hasattr(error, 'response') and error.response is not None:
+            error_detail = f"{error.response.status_code}: {error.response.text}"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.get("/jobs/lookup/{phone_number}")
@@ -461,7 +465,7 @@ async def verify_one_time_link(id: str):
         update_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
         update_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
         async with httpx.AsyncClient() as client:
-            patch_res = await client.patch(update_url, json={"link_used": True}, headers=update_headers)
+            patch_res = await client.patch(update_url, json={"link_used": True}, update_headers)
             patch_res.raise_for_status()
 
         return {
