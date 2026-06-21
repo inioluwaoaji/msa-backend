@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.11.0"
+    version="2.11.1"
 )
 
 # CORS Configuration Layer
@@ -236,7 +236,6 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         if job_data.get("preferred_date"):
             availability = f"{job_data['preferred_date']} {job_data.get('preferred_time', '')}".strip()
 
-        # Build clean payload to eliminate potential multi-mapping schema mismatches
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
             "phone_number": job_data.get("phone_number"),
@@ -279,7 +278,6 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         return {"status": "success", "data": [formatted_response]}
     except Exception as error:
-        # Pull detailed response text from internal HTTP client errors if available for faster diagnostic debugging
         error_detail = str(error)
         if hasattr(error, 'response') and error.response is not None:
             error_detail = f"{error.response.status_code}: {error.response.text}"
@@ -463,9 +461,14 @@ async def verify_one_time_link(id: str):
             raise HTTPException(status_code=403, detail="Access Denied: Profile application state is unverified.")
 
         update_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?uuid=eq.{id}"
-        update_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
+        update_headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
         async with httpx.AsyncClient() as client:
-            patch_res = await client.patch(update_url, json={"link_used": True}, update_headers)
+            patch_res = await client.patch(update_url, json={"link_used": True}, headers=update_headers)
             patch_res.raise_for_status()
 
         return {
