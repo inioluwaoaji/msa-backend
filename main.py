@@ -10,9 +10,10 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="Maynd Stomir Backend API",
-    version="2.12.0"
+    version="2.12.1"
 )
 
+# CORS Layer Configuration
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
@@ -35,6 +36,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 ACTUAL_WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/Dx3TDUz1WsMJc1qaUJ4RNo"
 
+# --- 🗺️ REGIONAL GEOTARGETING MIDDLEWARE ENGINE ---
 async def enforce_qatar_geographic_origin(request: Request):
     x_forwarded = request.headers.get("x-forwarded-for")
     client_ip = x_forwarded.split(",")[0].strip() if x_forwarded else request.client.host
@@ -59,6 +61,7 @@ async def enforce_qatar_geographic_origin(request: Request):
         pass
     return {"country": "Qatar", "city": "Doha (Default)"}
 
+# --- 📋 VALIDATION SCHEMAS ---
 class JobSubmission(BaseModel):
     full_name: str
     phone_number: str = Field(..., min_length=8, max_length=8)
@@ -96,6 +99,14 @@ class FreelanceApplication(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
+    @field_validator('full_name')
+    @classmethod
+    def validate_double_name(cls, value: str) -> str:
+        clean_name = value.strip()
+        if len(clean_name.split()) < 2:
+            raise ValueError("Full name must include at least both a first and last name.")
+        return clean_name
+
     @field_validator('qid_number')
     @classmethod
     def validate_strict_qatar_id(cls, value: str) -> str:
@@ -104,6 +115,7 @@ class FreelanceApplication(BaseModel):
             raise ValueError("Invalid QID structure. Requires a valid 11-digit Qatar ID.")
         return clean_qid
 
+# --- 🛠️ HELPER CONTRACT MAPPERS ---
 def map_to_api_contract(db_record: dict) -> dict:
     zone = db_record.get("zone_number")
     street = db_record.get("street_number")
@@ -155,6 +167,8 @@ async def send_whatsapp_message(to_number: str, message: str):
         except Exception:
             pass
 
+# --- 🚀 API CONTROLLER ROUTES ---
+
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission, request: Request, background_tasks: BackgroundTasks):
     await enforce_qatar_geographic_origin(request)
@@ -167,7 +181,6 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
 
         availability = f"{job_data['preferred_date']} {job_data.get('preferred_time', '')}".strip()
 
-        # NOTE: Ensure columns 'email' and 'problem_category' exist in your Supabase table schema
         supabase_payload = {
             "customer_name": job_data.get("full_name"),
             "phone_number": job_data.get("phone_number"),
@@ -194,11 +207,6 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         
         async with httpx.AsyncClient() as client:
             db_response = await client.post(raw_rest_url, json=supabase_payload, headers=headers)
-            if db_response.status_code == 400:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Database Alignment Error: Please verify that columns 'email' and 'problem_category' exist inside your Supabase 'jobs' table. Response: {db_response.text}"
-                )
             db_response.raise_for_status()
             inserted_records = db_response.json()
         
@@ -207,8 +215,6 @@ async def create_job(job: JobSubmission, request: Request, background_tasks: Bac
         notification_msg = f"🛠️ *Maynd Stomir - Request Confirmed*\n\nHi {formatted_response['full_name']},\nYour order is verified. Track live here: {tracking_url}"
         background_tasks.add_task(send_whatsapp_message, job.phone_number, notification_msg)
         return {"status": "success", "data": [formatted_response]}
-    except HTTPException as he:
-        raise he
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
@@ -220,7 +226,6 @@ async def lookup_job_by_phone(phone_number: str):
         prefixed_phone = f"974{base_phone}"
         
         base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
-        # Uses PostgREST alternative matching to verify both raw 8-digit and 974 formats
         raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?or=(phone_number.eq.{base_phone},phone_number.eq.{prefixed_phone})&order=created_at.desc"
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Accept": "application/json"}
         
@@ -237,6 +242,124 @@ async def lookup_job_by_phone(phone_number: str):
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- 恢复的在职申请提交 ROUTE ---
+@app.post("/freelance_applications", status_code=201)
+async def create_freelance_application(application: FreelanceApplication, request: Request, background_tasks: BackgroundTasks):
+    await enforce_qatar_geographic_origin(request)
+    base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    
+    # Check cooling period rules for rejection status histories
+    check_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?qid_number=eq.{application.qid_number}&order=created_at.desc&limit=1"
+    
+    async with httpx.AsyncClient() as client:
+        check_res = await client.get(check_url, headers=headers)
+        if check_res.status_code == 200:
+            past_submissions = check_res.json()
+            if past_submissions:
+                latest_record = past_submissions[0]
+                if latest_record.get("status") == "REJECTED":
+                    created_str = latest_record.get("created_at", "").replace("Z", "+00:00")
+                    try:
+                        rejection_time = datetime.fromisoformat(created_str)
+                        if datetime.now(timezone.utc) - rejection_time < timedelta(days=30):
+                            raise HTTPException(
+                                status_code=400, 
+                                detail="Policy Notice: Application blocked. Following a profile rejection, you must wait a minimum of 30 days before reapplying."
+                            )
+                    except HTTPException as http_err:
+                        raise http_err
+                    except Exception:
+                        pass
+
+    try:
+        app_data = application.model_dump()
+        
+        supabase_payload = {
+            "full_name": app_data.get("full_name"),
+            "phone_number": app_data.get("phone_number"),
+            "whatsapp_number": app_data.get("phone_number"),
+            "email_address": app_data.get("email"),
+            "trade_skill": app_data.get("category"),
+            "qid_number": app_data.get("qid_number"),
+            "kahramaa_id": app_data.get("kahramaa_id"),
+            "description": app_data.get("description"),
+            "id_photo_url": app_data.get("id_photo_url"),
+            "status": "PENDING",
+            "link_used": False
+        }
+
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications"
+        post_headers = {**headers, "Content-Type": "application/json", "Prefer": "return=representation"}
+        
+        async with httpx.AsyncClient() as client:
+            db_response = await client.post(raw_rest_url, json=supabase_payload, headers=post_headers)
+            db_response.raise_for_status()
+            inserted_records = db_response.json()
+
+        notification_msg = f"🛠️ *Maynd Stomir - Application Logged*\n\nThank you {app_data['full_name']}. Your application with trade category '{app_data['category']}' is currently under operational review."
+        background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
+        return {"status": "success", "data": inserted_records[0]}
+    except Exception as error:
+        if isinstance(error, HTTPException):
+            raise error
+        raise HTTPException(status_code=500, detail=str(error))
+
+@app.patch("/jobs/{job_id}/assign")
+async def assign_technician(job_id: str, payload: AssignTechnicianPayload, background_tasks: BackgroundTasks):
+    try:
+        base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
+        raw_rest_url = f"{base_url.rstrip('/')}/rest/v1/jobs?uuid=eq.{job_id}"
+        
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+        update_data = {"assigned_technician": payload.technician_name, "status": "ASSIGNED"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(raw_rest_url, json=update_data, headers=headers)
+            response.raise_for_status()
+            records = response.json()
+            
+        if not records:
+            raise HTTPException(status_code=404, detail="Job entry not found.")
+            
+        formatted_data = map_to_api_contract(records[0])
+        
+        technician_alert = (
+            f"🚀 *Maynd Stomir - New Route Assigned*\n\n"
+            f"Hello {payload.technician_name},\n"
+            f"You have been successfully assigned to Job #{job_id}.\n\n"
+            f"🗺️ *Follow Live Navigation to Client:* \n"
+            f"{formatted_data['navigation_map_url']}"
+        )
+        background_tasks.add_task(send_whatsapp_message, formatted_data['phone_number'], technician_alert)
+        return {"status": "success", "data": formatted_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/webhook/freelancer_status")
+async def update_freelancer_status_webhook(payload: dict, background_tasks: BackgroundTasks):
+    record = payload.get("record", {})
+    new_status = record.get("status", "PENDING")
+    phone_number = record.get("phone_number")
+    worker_name = record.get("full_name") or "Technician"
+    freelancer_id = record.get("uuid") or record.get("id") or "token"
+    
+    if new_status == "APPROVED" and phone_number:
+        secure_one_time_url = f"https://mayndstomir.com/verify-onboard.html?id={freelancer_id}"
+        onboarding_msg = (
+            f"🎉 *Welcome to Maynd Stomir, {worker_name}!*\n\n"
+            f"Your profile has been officially verified and approved.\n\n"
+            f"⚠️ *Secure One-Time Onboarding Invite Link:* \n"
+            f"{secure_one_time_url}"
+        )
+        background_tasks.add_task(send_whatsapp_message, phone_number, onboarding_msg)
+    return {"status": "processed"}
 
 @app.post("/workers/{id}/verify")
 async def verify_one_time_link(id: str):
