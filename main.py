@@ -10,7 +10,7 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="Maynd Stomir Backend API",
-    version="2.12.1"
+    version="2.12.2"
 )
 
 # CORS Layer Configuration
@@ -90,7 +90,7 @@ class FreelanceApplication(BaseModel):
     full_name: str
     phone_number: str = Field(..., min_length=8, max_length=8)
     email: str
-    category: str = Field(..., alias="trade")
+    trade: str 
     experience_years: int
     qid_number: str
     kahramaa_id: Optional[str] = None
@@ -243,14 +243,12 @@ async def lookup_job_by_phone(phone_number: str):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- 恢复的在职申请提交 ROUTE ---
 @app.post("/freelance_applications", status_code=201)
 async def create_freelance_application(application: FreelanceApplication, request: Request, background_tasks: BackgroundTasks):
     await enforce_qatar_geographic_origin(request)
     base_url = SUPABASE_URL.strip().split("/rest/v1")[0]
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     
-    # Check cooling period rules for rejection status histories
     check_url = f"{base_url.rstrip('/')}/rest/v1/freelance_applications?qid_number=eq.{application.qid_number}&order=created_at.desc&limit=1"
     
     async with httpx.AsyncClient() as client:
@@ -276,12 +274,16 @@ async def create_freelance_application(application: FreelanceApplication, reques
     try:
         app_data = application.model_dump()
         
+        # We explicitly balance column strategies to cover both possible column variations 
         supabase_payload = {
             "full_name": app_data.get("full_name"),
             "phone_number": app_data.get("phone_number"),
             "whatsapp_number": app_data.get("phone_number"),
             "email_address": app_data.get("email"),
-            "trade_skill": app_data.get("category"),
+            "email": app_data.get("email"),
+            "trade": app_data.get("trade"),
+            "trade_skill": app_data.get("trade"),
+            "experience_years": app_data.get("experience_years"),
             "qid_number": app_data.get("qid_number"),
             "kahramaa_id": app_data.get("kahramaa_id"),
             "description": app_data.get("description"),
@@ -295,10 +297,12 @@ async def create_freelance_application(application: FreelanceApplication, reques
         
         async with httpx.AsyncClient() as client:
             db_response = await client.post(raw_rest_url, json=supabase_payload, headers=post_headers)
-            db_response.raise_for_status()
+            if db_response.status_code >= 400:
+                # Expose specific database error reason directly to track down field constraint blocks
+                raise HTTPException(status_code=db_response.status_code, detail=f"Supabase write error: {db_response.text}")
             inserted_records = db_response.json()
 
-        notification_msg = f"🛠️ *Maynd Stomir - Application Logged*\n\nThank you {app_data['full_name']}. Your application with trade category '{app_data['category']}' is currently under operational review."
+        notification_msg = f"🛠️ *Maynd Stomir - Application Logged*\n\nThank you {app_data['full_name']}. Your application with trade category '{app_data['trade']}' is currently under operational review."
         background_tasks.add_task(send_whatsapp_message, application.phone_number, notification_msg)
         return {"status": "success", "data": inserted_records[0]}
     except Exception as error:
