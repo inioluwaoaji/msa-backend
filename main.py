@@ -16,14 +16,21 @@ app = FastAPI(
     version="2.12.0"
 )
 
-# CORS Configuration Layer
+# CORS Configuration Layer - Updated to support alternative local development ports
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
     "https://www.mayndstomir.com",
     "http://localhost:5500",
-    "http://127.0.0.1:5500"
+    "http://127.0.0.1:5500",
+    "http://localhost:5501",
+    "http://127.0.0.1:5501",
+    "http://localhost:5502",
+    "http://127.0.0.1:5502",
+    "http://localhost:3000", # Catch-all for common frontend local frameworks
+    "http://127.0.0.1:3000"
 ]
+
 
 app.add_middleware(
     CORSMiddleware,
