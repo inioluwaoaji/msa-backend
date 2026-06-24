@@ -13,10 +13,10 @@ from supabase import create_client, Client
 app = FastAPI(
     title="Maynd Stomir Backend API",
     description="Production backend pipeline handling jobs, tracking, freelance onboarding, and automated Twilio WhatsApp dispatch logic.",
-    version="2.12.0"
+    version="2.12.1"
 )
 
-# CORS Configuration Layer - Updated to support alternative local development ports
+# CORS Configuration Layer
 ORIGINS = [
     "https://maynd-stomir.vercel.app",
     "https://mayndstomir.com",
@@ -27,10 +27,9 @@ ORIGINS = [
     "http://127.0.0.1:5501",
     "http://localhost:5502",
     "http://127.0.0.1:5502",
-    "http://localhost:3000", # Catch-all for common frontend local frameworks
+    "http://localhost:3000",
     "http://127.0.0.1:3000"
 ]
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -349,8 +348,11 @@ async def get_all_technicians():
             jobs_req = client.get(jobs_url, headers=headers)
             workers_res, jobs_res = await asyncio.gather(workers_req, jobs_req)
             
-            workers_res.raise_for_status()
-            jobs_res.raise_for_status()
+            # Catch precise database failures instead of crashing obscurely
+            if workers_res.status_code != 200:
+                raise HTTPException(status_code=workers_res.status_code, detail=f"Supabase Freelance Table Error: {workers_res.text}")
+            if jobs_res.status_code != 200:
+                raise HTTPException(status_code=jobs_res.status_code, detail=f"Supabase Jobs Table Error: {jobs_res.text}")
             
             workers_data = workers_res.json()
             jobs_data = jobs_res.json()
@@ -378,11 +380,11 @@ async def get_all_technicians():
             metrics = technician_metrics.get(name_key, {"assigned": 0, "completed": 0})
 
             response_payload.append({
-                "id": worker.get("uuid") or worker.get("id"),
+                "id": str(worker.get("uuid") or worker.get("id") or ""),
                 "full_name": name,
                 "phone_number": worker.get("phone_number") or "",
                 "email": worker.get("email_address") or worker.get("email") or "",
-                "trade": worker.get("trade_skill") or "",
+                "trade": worker.get("trade_skill") or worker.get("category") or "",
                 "qid_number": worker.get("qid_number") or "",
                 "kahramaa_id": worker.get("kahramaa_id"),
                 "status": worker.get("status") or "PENDING",
@@ -391,8 +393,10 @@ async def get_all_technicians():
             })
 
         return response_payload
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal App Processing Error: {str(e)}")
 
 
 @app.post("/freelance_applications", status_code=201)
