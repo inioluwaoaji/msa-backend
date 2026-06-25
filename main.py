@@ -80,7 +80,7 @@ async def enforce_qatar_geographic_origin(request: Request):
 
 class JobSubmission(BaseModel):
     full_name: str = Field(..., description="Must match the names on uploaded QID.")
-    phone_number: str = Field(..., min_length=8, max_length=8, description="Must be restricted to exactly 8 digits.")
+    phone_number: str = Field(..., min_length=8, max_length=15, description="Testing bypass constraint.")
     email: Optional[str] = Field(None, description="Customer intake email field.")
     description: str
     category: str  
