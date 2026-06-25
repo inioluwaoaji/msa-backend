@@ -1,20 +1,39 @@
 import os
 import resend
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-# Initialize Resend with your API key
+# 1. Initialize FastAPI Application
+app = FastAPI(title="MindStormerX API")
+
+# 2. Initialize Resend Email Engine
 resend.api_key = os.environ.get("RESEND_API_KEY")
 
-# ... (Keep your JobSubmission Pydantic model here)
+# 3. Data Schema for Job Submissions
+class JobSubmission(BaseModel):
+    full_name: str
+    email: str
+    phone_number: str
+    category: str
+    description: str
+    preferred_date: str
+    preferred_time: str
 
+# 4. Root Health Check Route
+@app.get("/")
+async def root():
+    return {"status": "healthy", "service": "MindStormerX Backend"}
+
+# 5. Production Job Creation and Notification Route
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission):
-    # 1. Your existing logic to save the job to Supabase goes here
+    # TODO: Put your existing Supabase database insertion logic here
+    # (e.g., supabase.table("jobs").insert(...))
     
-    # 2. Build the Email Content
+    # Construct the internal operational notification email body
     email_html_content = f"""
     <h3>🛠️ New Job Request Submitted</h3>
+    <hr/>
     <p><strong>Client Name:</strong> {job.full_name}</p>
     <p><strong>Email:</strong> {job.email}</p>
     <p><strong>Phone:</strong> {job.phone_number}</p>
@@ -24,24 +43,33 @@ async def create_job(job: JobSubmission):
     """
     
     try:
-        # Send Alert to Technicians / Olamiposi
-        resend.Emails.send({{
+        # Dispatch Alert Email to Technical Lead & Staff
+        resend.Emails.send({
             "from": "Maynd Stomir Alerts <onboarding@resend.dev>",
-            "to": ["olamiposi@yourdomain.com", "your-email@domain.com"], # Add your technician team emails here
+            "to": ["olamiposi@yourdomain.com"],  # Swap with Olamiposi's real email
             "subject": f"🚨 New Job Assigned: {job.category.upper()}",
             "html": email_html_content
-        }})
+        })
         
-        # Send Confirmation Receipt to the Client
-        resend.Emails.send({{
+        # Dispatch Confirmation Receipt to the Client
+        resend.Emails.send({
             "from": "Maynd Stomir <onboarding@resend.dev>",
-            "to": [job.email], # Sends directly to the client's email address
+            "to": [job.email],
             "subject": "🛠️ Your Service Request is Confirmed!",
-            "html": f"<h3>Hi {job.full_name},</h3><p>We have received your request for {job.category}. A technician will review it shortly!</p>"
-        }})
+            "html": f"""
+            <h3>Hi {job.full_name},</h3>
+            <p>We have successfully received your service request for <strong>{job.category}</strong>.</p>
+            <p>Our localized technical cluster team is reviewing your description. A representative will contact you shortly.</p>
+            <br/>
+            <p>Best regards,<br/>The MindStormerX Team</p>
+            """
+        })
         
     except Exception as e:
-        # Don't let an email failure crash the database save action
-        print(f"Email dispatch error: {str(e)}")
+        # Prevent email gateway delivery drops from failing database tracking operations
+        print(f"Notification routing exception caught: {str(e)}")
         
-    return {"status": "success", "message": "Job created and emails dispatched."}
+    return {
+        "status": "success", 
+        "message": "Job record created successfully and communication dispatches triggered."
+    }
