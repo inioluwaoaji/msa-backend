@@ -19,14 +19,14 @@ class JobSubmission(BaseModel):
     preferred_date: str
     preferred_time: str
 
-# 4. Bulletproof Multi-Path & Multi-Method Health Check Routes (Fixes 405 Method Not Allowed)
+# 4. Bulletproof Multi-Path & Multi-Method Health Check Routes (Uptime Monitor)
 @app.api_route("", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 async def root_health_check():
     return {"status": "healthy", "service": "MindStormerX Backend"}
 
-# 5. Production Job Creation and Notification Route
+# 5. Production Job Creation and Notification Route (Live Custom Domain)
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission):
     # TODO: Put your existing Supabase database insertion logic here
@@ -47,16 +47,16 @@ async def create_job(job: JobSubmission):
     try:
         # Dispatch Alert Email to Technical Lead & Staff (Olamiposi)
         resend.Emails.send({
-            "from": "Maynd Stomir Alerts <onboarding@resend.dev>",
-            "to": ["viewwhatsappstatus@gmail.com"],  # Testing with your verified Resend email first
+            "from": "MindStormerX Alerts <alerts@mayndstomir.com>",
+            "to": ["viewwhatsappstatus@gmail.com"],  # Your internal monitoring inbox
             "subject": f"🚨 New Job Assigned: {job.category.upper()}",
             "html": email_html_content
         })
         
-        # Dispatch Confirmation Receipt to the Client
+        # Dispatch Confirmation Receipt to the Live Client
         resend.Emails.send({
-            "from": "Maynd Stomir <onboarding@resend.dev>",
-            "to": [job.email], # Sends to client (Make sure to use viewwhatsappstatus@gmail.com for testing!)
+            "from": "MindStormerX <support@mayndstomir.com>",
+            "to": [job.email], # Sends globally to whichever email address is sent via Postman
             "subject": "🛠️ Your Service Request is Confirmed!",
             "html": f"""
             <h3>Hi {job.full_name},</h3>
