@@ -19,10 +19,10 @@ class JobSubmission(BaseModel):
     preferred_date: str
     preferred_time: str
 
-# 4. Bulletproof Multi-Path Health Check Routes (Fixes the Uptime Monitor)
-@app.get("", include_in_schema=False)
-@app.get("/", include_in_schema=False)
-@app.get("/health", include_in_schema=False)
+# 4. Bulletproof Multi-Path & Multi-Method Health Check Routes (Fixes 405 Method Not Allowed)
+@app.api_route("", methods=["GET", "HEAD"], include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+@app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 async def root_health_check():
     return {"status": "healthy", "service": "MindStormerX Backend"}
 
