@@ -19,10 +19,11 @@ class JobSubmission(BaseModel):
     preferred_date: str
     preferred_time: str
 
-# Route health check paths to keep your monitoring tools happy
-@app.get("/")
-@app.get("/health")
-async def root():
+# 4. Bulletproof Multi-Path Health Check Routes (Fixes the Uptime Monitor)
+@app.get("", include_in_schema=False)
+@app.get("/", include_in_schema=False)
+@app.get("/health", include_in_schema=False)
+async def root_health_check():
     return {"status": "healthy", "service": "MindStormerX Backend"}
 
 # 5. Production Job Creation and Notification Route
@@ -44,10 +45,10 @@ async def create_job(job: JobSubmission):
     """
     
     try:
-        # Dispatch Alert Email to Technical Lead & Staff
+        # Dispatch Alert Email to Technical Lead & Staff (Olamiposi)
         resend.Emails.send({
             "from": "Maynd Stomir Alerts <onboarding@resend.dev>",
-            "to": ["olamiposi@yourdomain.com"],  # Swap with Olamiposi's real email
+            "to": ["viewwhatsappstatus@gmail.com"],  # Testing with your verified Resend email first
             "subject": f"🚨 New Job Assigned: {job.category.upper()}",
             "html": email_html_content
         })
@@ -55,7 +56,7 @@ async def create_job(job: JobSubmission):
         # Dispatch Confirmation Receipt to the Client
         resend.Emails.send({
             "from": "Maynd Stomir <onboarding@resend.dev>",
-            "to": [job.email],
+            "to": [job.email], # Sends to client (Make sure to use viewwhatsappstatus@gmail.com for testing!)
             "subject": "🛠️ Your Service Request is Confirmed!",
             "html": f"""
             <h3>Hi {job.full_name},</h3>
