@@ -19,8 +19,9 @@ class JobSubmission(BaseModel):
     preferred_date: str
     preferred_time: str
 
-# 4. Root Health Check Route
+# Route health check paths to keep your monitoring tools happy
 @app.get("/")
+@app.get("/health")
 async def root():
     return {"status": "healthy", "service": "MindStormerX Backend"}
 
