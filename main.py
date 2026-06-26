@@ -160,3 +160,44 @@ async def create_job(job: JobSubmission):
             }
         }
     }
+    # 1. Schema for Technician Registration 
+# (Matches the QID, Kahramaa/Blue Plate inputs from your form)
+class TechnicianApplication(BaseModel):
+    full_name: str
+    email: str
+    years_of_experience: int or str
+    qid_number: str
+    kahramaa_number: str
+    description: str
+
+# 2. The New Endpoint (Olamiposi's frontend is hitting this)
+@app.post("/freelance_applications", status_code=201)
+async def register_technician(tech: TechnicianApplication):
+    # TODO: Insert tech profile data into your Supabase technician database table here
+    
+    try:
+        # Send internal email alert to team/Yemi about a new applicant
+        resend.Emails.send({
+            "from": "MindStormerX Core <alerts@mayndstomir.com>",
+            "to": ["viewwhatsappstatus@gmail.com"],
+            "subject": f"📋 New Technician Applicant: {tech.full_name}",
+            "html": f"""
+            <h3>New Freelance Onboarding Application</h3>
+            <p><strong>Name:</strong> {tech.full_name}</p>
+            <p><strong>Email:</strong> {tech.email}</p>
+            <p><strong>QID:</strong> {tech.qid_number}</p>
+            <p><strong>Kahramaa Reference:</strong> {tech.kahramaa_number}</p>
+            <p><strong>Skills:</strong> {tech.description}</p>
+            """
+        })
+    except Exception as e:
+        print(f"Tech email warning: {str(e)}")
+
+    # Return success object for frontend popup notifications
+    return {
+        "status": "success",
+        "message": "Application submitted successfully!",
+        "popup_data": {
+            "technician_notice": "Your application has been received! We will review your details and contact you via WhatsApp shortly."
+        }
+    }
