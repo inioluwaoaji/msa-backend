@@ -2,16 +2,32 @@ import os
 import math
 import resend
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
 # 1. Initialize FastAPI Application
 app = FastAPI(title="MindStormerX Proximity Match API")
 
-# 2. Initialize Resend Email Engine
+# 2. Configure CORS Security Middleware (Resolves the browser block)
+origins = [
+    "https://www.mayndstomir.com",
+    "https://mayndstomir.com",
+    "http://localhost:3000",
+    "http://localhost:5173",  # Supports Vite/React local dev servers if Olamiposi uses them
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 3. Initialize Resend Email Engine
 resend.api_key = os.environ.get("RESEND_API_KEY")
 
-# 3. Data Schemas for Payload Validation
+# 4. Data Schemas for Form Payload Validation
 class JobSubmission(BaseModel):
     full_name: str
     email: str
@@ -20,16 +36,14 @@ class JobSubmission(BaseModel):
     description: str
     preferred_date: str
     preferred_time: str
-    # Live coordinates passed from the frontend map interface
+    # Coordinates passed directly from the frontend interface
     client_lat: float  
     client_lng: float  
 
-# 4. Haversine Formula for Proximity Routing (Calculates distance in kilometers)
+# 5. Haversine Formula for Proximity Routing (Calculates distance in kilometers)
 def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    # Convert decimal degrees to radians 
     rad_lat1, rad_lon1, rad_lat2, rad_lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     
-    # Haversine core formula
     dlon = rad_lon2 - rad_lon1
     dlat = rad_lat2 - rad_lat1
     a = math.sin(dlat/2)**2 + math.cos(rad_lat1) * math.cos(rad_lat2) * math.sin(dlon/2)**2
@@ -38,29 +52,29 @@ def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     radius_of_earth_km = 6371.0
     return c * radius_of_earth_km
 
-# 5. Bulletproof Uptime Monitor Routes
+# 6. Multi-Path Uptime Monitor Routes
 @app.api_route("", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 async def root_health_check():
     return {"status": "healthy", "service": "MindStormerX Backend"}
 
-# 6. Intelligent Proximity Matching and Dispatch Route
+# 7. Core Match and Notification Dispatch Route
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission):
     
-    # --- STEP A: DATABASE QUERY (PLACEHOLDER FOR SUPABASE/POSTGRES) ---
-    # Fetch active technicians filtering by matching job.category.
-    # Each technician row needs: id, name, email, phone, current_lat, current_lng
+    # --- DATABASE PLACER ---
+    # TODO: Connect with your production Supabase database instance to pull available technicians.
+    # e.g., technicians = supabase.table("technicians").select("*").eq("category", job.category).execute()
     
-    # Mocking technician cluster data for runtime execution:
+    # Static fallback array for operational testing
     available_technicians = [
         {
             "id": 101,
             "name": "Olamiposi Technical Cluster",
-            "email": "viewwhatsappstatus@gmail.com",  # Using verified email for testing stability
+            "email": "viewwhatsappstatus@gmail.com",  
             "phone": "+2348012345678",
-            "lat": 6.5244,  # Example coordinates
+            "lat": 6.5244,  
             "lng": 3.3792
         },
         {
@@ -73,7 +87,7 @@ async def create_job(job: JobSubmission):
         }
     ]
     
-    # --- STEP B: PROXIMITY SORTING LOGIC ---
+    # --- GEOSPATIAL PROXIMITY CALCULATOR ---
     assigned_tech = None
     shortest_distance = float('inf')
     
@@ -86,37 +100,31 @@ async def create_job(job: JobSubmission):
     if not assigned_tech:
         raise HTTPException(status_code=404, detail="No localized field technicians available for this category.")
 
-    # --- STEP C: PERSIST DATA ---
-    # TODO: Write job execution record and assignment mapping to Supabase
-    # supabase.table("jobs").insert({"client": job.full_name, "assigned_tech_id": assigned_tech["id"], ...})
-
-    # --- STEP D: LIVE MAP ROUTING URLS ---
-    # Generates a universal clickable link for the technician to route to the client
+    # --- COMMUNICATIONS ENGINE LINKS ---
     live_location_url = f"https://www.google.com/maps/search/?api=1&query={job.client_lat},{job.client_lng}"
-    # Formats a clean direct click-to-chat hyperlink for WhatsApp
-    whatsapp_direct_url = f"https://wa.me/{job.phone_number.replace('+', '')}"
+    whatsapp_direct_url = f"https://wa.me/{job.phone_number.replace('+', '').replace(' ', '')}"
 
-    # --- STEP E: NOTIFICATION ENGINE DISPATCHES ---
+    # --- EMAIL DISPATCH WORKER ---
     try:
-        # 1. Alert Dispatch to the Assigned Technician
+        # A. Alert Payload to Assigned Field Technician
         resend.Emails.send({
             "from": "MindStormerX Dispatch <alerts@mayndstomir.com>",
             "to": [assigned_tech["email"]],
             "subject": "🚨 Urgent: New Client Assigned in Your Proximity",
             "html": f"""
             <h3>🛠️ Service Request Accepted</h3>
-            <p>Hello {assigned_tech["name"]}, you have been assigned a nearby client based on coordinate matching.</p>
+            <p>Hello {assigned_tech["name"]}, you have been assigned a nearby client via proximity matching.</p>
             <hr/>
             <p><strong>Client Name:</strong> {job.full_name}</p>
             <p><strong>Description:</strong> {job.description}</p>
-            <p><strong>Scheduled Window:</strong> {job.preferred_date} at {job.preferred_time}</p>
+            <p><strong>Scheduled Slot:</strong> {job.preferred_date} at {job.preferred_time}</p>
             <br/>
             <p><strong>📱 Client WhatsApp Link:</strong> <a href="{whatsapp_direct_url}">Chat on WhatsApp ({job.phone_number})</a></p>
             <p><strong>📍 Client Live Location:</strong> <a href="{live_location_url}" target="_blank">Open Navigation Map</a></p>
             """
         })
         
-        # 2. Confirmation Dispatch to the Client
+        # B. Confirmation Receipt Payload to Client
         resend.Emails.send({
             "from": "MindStormerX <support@mayndstomir.com>",
             "to": [job.email], 
@@ -136,11 +144,10 @@ async def create_job(job: JobSubmission):
         })
         
     except Exception as e:
-        print(f"Communications infrastructure exception: {str(e)}")
+        # Prevents email network glitches from crashing the user application submit state
+        print(f"Communications tracking gateway warning: {str(e)}")
         
-    # --- STEP F: FRONTEND POPUP METADATA ---
-    # Returning this structured object allows your web/mobile frontend to read the data
-    # and immediately pop up success modals on both screens.
+    # --- RESPONSE OBJECT FOR FRONTEND MODALS/POPUPS ---
     return {
         "status": "success", 
         "message": "Application accepted and proximity route assigned.",
