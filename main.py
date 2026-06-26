@@ -6,14 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # 1. Initialize FastAPI Application
-app = FastAPI(title="MindStormerX Proximity Match API")
+app = FastAPI(title="MindStormerX Master API")
 
 # 2. Configure CORS Security Middleware (Resolves the browser block)
 origins = [
     "https://www.mayndstomir.com",
     "https://mayndstomir.com",
     "http://localhost:3000",
-    "http://localhost:5173",  # Supports Vite/React local dev servers if Olamiposi uses them
+    "http://localhost:5173",  # Supports Vite/React local development servers
 ]
 
 app.add_middleware(
@@ -27,7 +27,12 @@ app.add_middleware(
 # 3. Initialize Resend Email Engine
 resend.api_key = os.environ.get("RESEND_API_KEY")
 
-# 4. Data Schemas for Form Payload Validation
+
+# ==========================================
+#        DATA VALIDATION SCHEMAS
+# ==========================================
+
+# Form payload validation schema for client jobs
 class JobSubmission(BaseModel):
     full_name: str
     email: str
@@ -36,11 +41,26 @@ class JobSubmission(BaseModel):
     description: str
     preferred_date: str
     preferred_time: str
-    # Coordinates passed directly from the frontend interface
     client_lat: float  
     client_lng: float  
 
-# 5. Haversine Formula for Proximity Routing (Calculates distance in kilometers)
+# Form payload validation schema for freelancer onboarding
+class TechnicianApplication(BaseModel):
+    full_name: str
+    phone_number: str
+    email: str
+    trade: str
+    experience_years: int
+    qid_number: str
+    kahramaa_id: str
+    id_photo_url: str
+
+
+# ==========================================
+#          GEOSPATIAL CORE LOGIC
+# ==========================================
+
+# Haversine Formula for Proximity Routing (Calculates distance in kilometers)
 def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     rad_lat1, rad_lon1, rad_lat2, rad_lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     
@@ -52,22 +72,25 @@ def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     radius_of_earth_km = 6371.0
     return c * radius_of_earth_km
 
-# 6. Multi-Path Uptime Monitor Routes
+
+# ==========================================
+#             SYSTEM ENDPOINTS
+# ==========================================
+
+# Multi-Path Uptime Monitor Health Checks
 @app.api_route("", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 @app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 async def root_health_check():
-    return {"status": "healthy", "service": "MindStormerX Backend"}
+    return {"status": "healthy", "service": "MindStormerX Core Engine"}
 
-# 7. Core Match and Notification Dispatch Route
+
+# Route 1: Client Service Booking & Proximity Matching Engine
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission):
+    # TODO: Connect your production Supabase database instance to pull available technicians dynamically
     
-    # --- DATABASE PLACER ---
-    # TODO: Connect with your production Supabase database instance to pull available technicians.
-    # e.g., technicians = supabase.table("technicians").select("*").eq("category", job.category).execute()
-    
-    # Static fallback array for operational testing
+    # Static fallback cluster array for operational execution
     available_technicians = [
         {
             "id": 101,
@@ -87,7 +110,7 @@ async def create_job(job: JobSubmission):
         }
     ]
     
-    # --- GEOSPATIAL PROXIMITY CALCULATOR ---
+    # Geospatial Calculation Matrix
     assigned_tech = None
     shortest_distance = float('inf')
     
@@ -100,13 +123,12 @@ async def create_job(job: JobSubmission):
     if not assigned_tech:
         raise HTTPException(status_code=404, detail="No localized field technicians available for this category.")
 
-    # --- COMMUNICATIONS ENGINE LINKS ---
+    # Generate external tracking routing links
     live_location_url = f"https://www.google.com/maps/search/?api=1&query={job.client_lat},{job.client_lng}"
     whatsapp_direct_url = f"https://wa.me/{job.phone_number.replace('+', '').replace(' ', '')}"
 
-    # --- EMAIL DISPATCH WORKER ---
     try:
-        # A. Alert Payload to Assigned Field Technician
+        # A. Notification Dispatch to Assigned Field Professional
         resend.Emails.send({
             "from": "MindStormerX Dispatch <alerts@mayndstomir.com>",
             "to": [assigned_tech["email"]],
@@ -124,7 +146,7 @@ async def create_job(job: JobSubmission):
             """
         })
         
-        # B. Confirmation Receipt Payload to Client
+        # B. Confirmation Dispatch Payload directly to Client
         resend.Emails.send({
             "from": "MindStormerX <support@mayndstomir.com>",
             "to": [job.email], 
@@ -142,12 +164,9 @@ async def create_job(job: JobSubmission):
             <p>Best regards,<br/>The MindStormerX Team</p>
             """
         })
-        
     except Exception as e:
-        # Prevents email network glitches from crashing the user application submit state
-        print(f"Communications tracking gateway warning: {str(e)}")
+        print(f"Communications infrastructure email exception: {str(e)}")
         
-    # --- RESPONSE OBJECT FOR FRONTEND MODALS/POPUPS ---
     return {
         "status": "success", 
         "message": "Application accepted and proximity route assigned.",
@@ -160,23 +179,15 @@ async def create_job(job: JobSubmission):
             }
         }
     }
-    # 1. Schema for Technician Registration 
-# (Matches the QID, Kahramaa/Blue Plate inputs from your form)
-class TechnicianApplication(BaseModel):
-    full_name: str
-    email: str
-    years_of_experience: int or str
-    qid_number: str
-    kahramaa_number: str
-    description: str
 
-# 2. The New Endpoint (Olamiposi's frontend is hitting this)
+
+# Route 2: Onboarding Endpoint for Freelance Technicians
 @app.post("/freelance_applications", status_code=201)
 async def register_technician(tech: TechnicianApplication):
-    # TODO: Insert tech profile data into your Supabase technician database table here
+    # TODO: Connect your production Supabase table here to store technical applicants
     
     try:
-        # Send internal email alert to team/Yemi about a new applicant
+        # Internal Notification email mapping the exact frontend fields
         resend.Emails.send({
             "from": "MindStormerX Core <alerts@mayndstomir.com>",
             "to": ["viewwhatsappstatus@gmail.com"],
@@ -184,16 +195,18 @@ async def register_technician(tech: TechnicianApplication):
             "html": f"""
             <h3>New Freelance Onboarding Application</h3>
             <p><strong>Name:</strong> {tech.full_name}</p>
+            <p><strong>Phone:</strong> {tech.phone_number}</p>
             <p><strong>Email:</strong> {tech.email}</p>
+            <p><strong>Trade/Specialty:</strong> {tech.trade.upper()}</p>
+            <p><strong>Years of Experience:</strong> {tech.experience_years}</p>
             <p><strong>QID:</strong> {tech.qid_number}</p>
-            <p><strong>Kahramaa Reference:</strong> {tech.kahramaa_number}</p>
-            <p><strong>Skills:</strong> {tech.description}</p>
+            <p><strong>Kahramaa ID:</strong> {tech.kahramaa_id}</p>
+            <p><strong>ID Photo Link:</strong> <a href="{tech.id_photo_url}" target="_blank">View Uploaded ID Document</a></p>
             """
         })
     except Exception as e:
-        print(f"Tech email warning: {str(e)}")
+        print(f"Freelancer registration email notification warning: {str(e)}")
 
-    # Return success object for frontend popup notifications
     return {
         "status": "success",
         "message": "Application submitted successfully!",
