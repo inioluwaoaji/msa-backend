@@ -9,24 +9,16 @@ from supabase import create_client, Client
 # 1. Initialize FastAPI Application
 app = FastAPI(title="MindStormerX Live Production API")
 
-# 2. Configure Robust CORS Policy (Resolves the preflight access control block)
+# 2. Configure Robust CORS Policy (Fixes CORS policy blockades globally)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows any frontend domain to seamlessly talk to your Render backend
+    allow_origins=["*"],  # Allows any frontend domain to talk to your backend
     allow_credentials=True,
-    allow_methods=["*"],  # Allows GET, POST, OPTIONS, and PUT requests unconditionally
-    allow_headers=["*"],  # Allows all incoming custom validation headers
+    allow_methods=["*"],  # Allows all incoming request methods
+    allow_headers=["*"],  # Allows all headers
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 3. Initialize Production API Engines (Supabase + Resend)
+# 3. Initialize Production API Engines (Maps directly to your Render Env variables)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -41,7 +33,7 @@ resend.api_key = os.environ.get("RESEND_API_KEY")
 class JobSubmission(BaseModel):
     full_name: str
     email: str
-    phone_number: str  # Client's WhatsApp number
+    phone_number: str  
     category: str
     description: str
     preferred_date: str
@@ -70,7 +62,7 @@ def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     dlat = rad_lat2 - rad_lat1
     a = math.sin(dlat/2)**2 + math.cos(rad_lat1) * math.cos(rad_lat2) * math.sin(dlon/2)**2
     c = 2 * math.asin(math.sqrt(a))
-    return c * 6371.0  # Earth's radius in kilometers
+    return c * 6371.0  
 
 
 # ==========================================
@@ -84,13 +76,13 @@ async def root_health_check():
     return {"status": "healthy", "service": "MindStormerX Live Grid"}
 
 
-# Route 1: Production Client Booking & Real-Time Proximity Routing Engine
+# Route 1: Client Booking & Real-Time Proximity Routing Engine
 @app.post("/jobs", status_code=201)
 async def create_job(job: JobSubmission):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection parameters are misconfigured.")
 
-    # 1. Persist client job entry directly into your database
+    # Insert client job entry directly into your database
     job_insert = supabase.table("jobs").insert({
         "full_name": job.full_name,
         "email": job.email,
@@ -103,11 +95,10 @@ async def create_job(job: JobSubmission):
         "longitude": job.client_lng
     }).execute()
 
-    # 2. Query dynamic technicians matching the specific service type/trade category
+    # Query matching technicians based on requested trade
     tech_query = supabase.table("technicians").select("*").eq("trade", job.category.lower()).execute()
     available_technicians = tech_query.data
 
-    # Fallback to general technicians roster if trade query yields empty sets
     if not available_technicians:
         tech_query = supabase.table("technicians").select("*").execute()
         available_technicians = tech_query.data
@@ -115,12 +106,11 @@ async def create_job(job: JobSubmission):
     if not available_technicians:
         raise HTTPException(status_code=404, detail="No field technicians currently registered on the grid.")
 
-    # 3. Process Live Proximity Match
+    # Process Live Proximity Match
     assigned_tech = None
     shortest_distance = float('inf')
     
     for tech in available_technicians:
-        # Pulling geographical coordinates dynamically stored inside database table columns
         tech_lat = float(tech.get("latitude") or 0.0)
         tech_lng = float(tech.get("longitude") or 0.0)
         
@@ -129,7 +119,7 @@ async def create_job(job: JobSubmission):
             shortest_distance = distance
             assigned_tech = tech
 
-    # 4. Generate Live External Tracking Deep Links
+    # Generate tracking URLs
     live_location_url = f"https://www.google.com/maps/search/?api=1&query={job.client_lat},{job.client_lng}"
     whatsapp_direct_url = f"https://wa.me/{job.phone_number.replace('+', '').replace(' ', '')}"
 
@@ -137,10 +127,10 @@ async def create_job(job: JobSubmission):
         # A. Notification Dispatch directly to the matched Technician's dynamic real email
         resend.Emails.send({
             "from": "MindStormerX Dispatch <alerts@mayndstomir.com>",
-            "to": [assigned_tech["email"]],  # Dynamically pulled directly from database row
+            "to": [assigned_tech["email"]],  
             "subject": "🚨 Urgent: New Client Assigned in Your Proximity",
             "html": f"""
-            <h3>🛠️ Service Request Assigned</h3>
+            <h3>🛠 ... Service Request Assigned</h3>
             <p>Hello {assigned_tech['full_name']}, you have been automatically assigned a new service request based on proximity criteria.</p>
             <hr/>
             <p><strong>Client Name:</strong> {job.full_name}</p>
@@ -156,7 +146,7 @@ async def create_job(job: JobSubmission):
         resend.Emails.send({
             "from": "MindStormerX <support@mayndstomir.com>",
             "to": [job.email], 
-            "subject": "🛠️ Technician Dispatched! Your Service is Confirmed",
+            "subject": "🛠 ... Technician Dispatched! Your Service is Confirmed",
             "html": f"""
             <h3>Hi {job.full_name},</h3>
             <p>Your application has been received and processed successfully.</p>
@@ -187,13 +177,13 @@ async def create_job(job: JobSubmission):
     }
 
 
-# Route 2: Live Onboarding Endpoint for Freelance Technicians
+# Route 2: Onboarding Endpoint for Freelance Technicians
 @app.post("/freelance_applications", status_code=201)
 async def register_technician(tech: TechnicianApplication):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection parameters are misconfigured.")
 
-    # 1. Insert applicant data into production database table row 
+    # Insert applicant data into production database table
     supabase.table("technicians").insert({
         "full_name": tech.full_name,
         "phone_number": tech.phone_number,
@@ -203,16 +193,15 @@ async def register_technician(tech: TechnicianApplication):
         "qid_number": tech.qid_number,
         "kahramaa_id": tech.kahramaa_id,
         "id_photo_url": tech.id_photo_url,
-        "latitude": 25.2854,  # Defaults to core metro zone coordinates upon application sign-up
+        "latitude": 25.2854,  
         "longitude": 51.5310
     }).execute()
     
     try:
-        # 2. Administrative internal email notification layout
         resend.Emails.send({
             "from": "MindStormerX Core <alerts@mayndstomir.com>",
-            "to": ["viewwhatsappstatus@gmail.com"],  # Your core internal project monitoring hub
-            "subject": f"📋 New Technician Applicant Onboarded: {tech.full_name}",
+            "to": ["viewwhatsappstatus@gmail.com"],  
+            "subject": f"📋 ... New Technician Applicant Onboarded: {tech.full_name}",
             "html": f"""
             <h3>New Freelance Onboarding Application</h3>
             <p><strong>Name:</strong> {tech.full_name}</p>
@@ -235,27 +224,23 @@ async def register_technician(tech: TechnicianApplication):
             "technician_notice": "Your application has been received! We will review your details and contact you via WhatsApp shortly."
         }
     }
-    # Route 3: Client Job Status Lookup
+
+
+# Route 3: Client Job Status Lookup Endpoint
 @app.get("/lookup/{phone_number}")
 async def lookup_job(phone_number: str):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection is misconfigured.")
 
-    # 1. Query the database for any jobs matching this phone number
-    # We strip spaces and plus signs to ensure matches work even with country codes
     clean_phone = phone_number.replace("+", "").replace(" ", "")
-    
-    # Try querying with a simple text match
     job_query = supabase.table("jobs").select("*").ilike("phone_number", f"%{clean_phone}%").execute()
     jobs = job_query.data
 
     if not jobs:
         raise HTTPException(status_code=404, detail="No active jobs found for this phone number.")
 
-    # 2. Grab the most recent job submission
     latest_job = jobs[-1]
 
-    # Return the data structure Olamiposi's frontend expects to render the status card
     return {
         "status": "success",
         "job": {
@@ -264,6 +249,6 @@ async def lookup_job(phone_number: str):
             "description": latest_job.get("description"),
             "preferred_date": latest_job.get("preferred_date"),
             "preferred_time": latest_job.get("preferred_time"),
-            "status": latest_job.get("status") or "Assigned"  # Defaults to Assigned since our engine matches instantly
+            "status": latest_job.get("status") or "Assigned"
         }
     }
