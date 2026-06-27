@@ -9,7 +9,7 @@ from supabase import create_client, Client
 # 1. Initialize FastAPI Application
 app = FastAPI(title="MindStormerX Live Production API")
 
-# 2. Configure Robust CORS Policy
+# 2. Configure Bulletproof CORS Policy (Explicitly authorizes your live production domains)
 origins = [
     "https://www.mayndstomir.com",
     "https://mayndstomir.com",
@@ -25,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. Initialize Production API Engines (Maps directly to your Render Env variables)
+# 3. Initialize Production Engines (Maps to your exact Render dashboard setup)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -53,9 +53,9 @@ class TechnicianApplication(BaseModel):
     phone_number: str
     email: str
     trade: str
-    experience_years: int
+    experience_years: int  # Matches frontend freelance.js payload field exactly
     qid_number: str
-    kahramaa_id: str
+    kahramaa_id: str       # Matches frontend freelance.js payload field exactly
     id_photo_url: str
 
 
@@ -89,7 +89,7 @@ async def create_job(job: JobSubmission):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection parameters are misconfigured.")
 
-    # Insert client job entry directly into your database
+    # Insert client job entry directly into database
     job_insert = supabase.table("jobs").insert({
         "full_name": job.full_name,
         "email": job.email,
@@ -102,7 +102,7 @@ async def create_job(job: JobSubmission):
         "longitude": job.client_lng
     }).execute()
 
-    # Query matching technicians based on requested trade
+    # Query matching technicians based on trade
     tech_query = supabase.table("technicians").select("*").eq("trade", job.category.lower()).execute()
     available_technicians = tech_query.data
 
@@ -113,7 +113,7 @@ async def create_job(job: JobSubmission):
     if not available_technicians:
         raise HTTPException(status_code=404, detail="No field technicians currently registered on the grid.")
 
-    # Process Live Proximity Match
+    # Calculate closest technician
     assigned_tech = None
     shortest_distance = float('inf')
     
@@ -126,18 +126,18 @@ async def create_job(job: JobSubmission):
             shortest_distance = distance
             assigned_tech = tech
 
-    # Generate tracking URLs
+    # Generate external communication / navigation links
     live_location_url = f"https://www.google.com/maps/search/?api=1&query={job.client_lat},{job.client_lng}"
     whatsapp_direct_url = f"https://wa.me/{job.phone_number.replace('+', '').replace(' ', '')}"
 
     try:
-        # A. Notification Dispatch directly to the matched Technician's dynamic real email
+        # A. Send Tracking Link to Technician
         resend.Emails.send({
             "from": "MindStormerX Dispatch <alerts@mayndstomir.com>",
             "to": [assigned_tech["email"]],  
             "subject": "🚨 Urgent: New Client Assigned in Your Proximity",
             "html": f"""
-            <h3>🛠 ... Service Request Assigned</h3>
+            <h3>🛠️ Service Request Assigned</h3>
             <p>Hello {assigned_tech['full_name']}, you have been automatically assigned a new service request based on proximity criteria.</p>
             <hr/>
             <p><strong>Client Name:</strong> {job.full_name}</p>
@@ -149,15 +149,15 @@ async def create_job(job: JobSubmission):
             """
         })
         
-        # B. Confirmation Dispatch Payload directly to Client
+        # B. Send Dispatch Confirmation to Client
         resend.Emails.send({
             "from": "MindStormerX <support@mayndstomir.com>",
             "to": [job.email], 
-            "subject": "🛠 ... Technician Dispatched! Your Service is Confirmed",
+            "subject": "🛠️ Technician Dispatched! Your Service is Confirmed",
             "html": f"""
             <h3>Hi {job.full_name},</h3>
-            <p>Your application has been received and processed successfully.</p>
-            <p><strong>Good news:</strong> A technician has already been matched to your location based on proximity constraints!</p>
+            <p>Your request has been received and processed successfully.</p>
+            <p>A technician has been matched to your location based on proximity constraints!</p>
             <hr/>
             <p><strong>Assigned Professional:</strong> {assigned_tech['full_name']}</p>
             <p><strong>Contact Direct Line:</strong> {assigned_tech['phone_number']}</p>
@@ -168,7 +168,7 @@ async def create_job(job: JobSubmission):
             """
         })
     except Exception as e:
-        print(f"Operational production mail routing warning: {str(e)}")
+        print(f"Mail routing operational warning: {str(e)}")
 
     return {
         "status": "success", 
@@ -190,7 +190,7 @@ async def register_technician(tech: TechnicianApplication):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection parameters are misconfigured.")
 
-    # Insert applicant data into production database table
+    # Safe insert sequence directly mapping fields parsed out from the schema
     supabase.table("technicians").insert({
         "full_name": tech.full_name,
         "phone_number": tech.phone_number,
@@ -208,7 +208,7 @@ async def register_technician(tech: TechnicianApplication):
         resend.Emails.send({
             "from": "MindStormerX Core <alerts@mayndstomir.com>",
             "to": ["viewwhatsappstatus@gmail.com"],  
-            "subject": f"📋 ... New Technician Applicant Onboarded: {tech.full_name}",
+            "subject": f"📋 New Technician Onboarded: {tech.full_name}",
             "html": f"""
             <h3>New Freelance Onboarding Application</h3>
             <p><strong>Name:</strong> {tech.full_name}</p>
