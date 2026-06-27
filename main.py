@@ -237,3 +237,6 @@ async def register_technician(tech: TechnicianApplication):
         "status": "success",
         "message": "Application uploaded and logged successfully!"
     }
+    @app.route("/", methods=["GET", "HEAD"])
+async def root_health_check(request: Request):
+    return {"status": "healthy"}
