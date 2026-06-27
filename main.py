@@ -234,3 +234,35 @@ async def register_technician(tech: TechnicianApplication):
             "technician_notice": "Your application has been received! We will review your details and contact you via WhatsApp shortly."
         }
     }
+    # Route 3: Client Job Status Lookup
+@app.get("/lookup/{phone_number}")
+async def lookup_job(phone_number: str):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database connection is misconfigured.")
+
+    # 1. Query the database for any jobs matching this phone number
+    # We strip spaces and plus signs to ensure matches work even with country codes
+    clean_phone = phone_number.replace("+", "").replace(" ", "")
+    
+    # Try querying with a simple text match
+    job_query = supabase.table("jobs").select("*").ilike("phone_number", f"%{clean_phone}%").execute()
+    jobs = job_query.data
+
+    if not jobs:
+        raise HTTPException(status_code=404, detail="No active jobs found for this phone number.")
+
+    # 2. Grab the most recent job submission
+    latest_job = jobs[-1]
+
+    # Return the data structure Olamiposi's frontend expects to render the status card
+    return {
+        "status": "success",
+        "job": {
+            "full_name": latest_job.get("full_name"),
+            "category": latest_job.get("category"),
+            "description": latest_job.get("description"),
+            "preferred_date": latest_job.get("preferred_date"),
+            "preferred_time": latest_job.get("preferred_time"),
+            "status": latest_job.get("status") or "Assigned"  # Defaults to Assigned since our engine matches instantly
+        }
+    }
