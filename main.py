@@ -74,7 +74,7 @@ class TechnicianApplication(BaseModel):
     trade: str
     experience_years: int  
     qid_number: str
-    kahramaa_id_url: str  # CHANGED: Now expects an uploaded document image URL per boss instructions
+    kahramaa_id_url: str  # Uploaded document image URL
     id_photo_url: str
 
 
@@ -95,9 +95,14 @@ def calculate_proximity(lat1: float, lon1: float, lat2: float, lon2: float) -> f
 #             SYSTEM ENDPOINTS
 # ==========================================
 
+# Native FastAPI endpoints to satisfy both standard GET and UptimeRobot HEAD checks cleanly
 @app.get("/")
-async def root_health_check():
+async def root_health_check_get():
     return {"status": "healthy"}
+
+@app.head("/")
+async def root_health_check_head():
+    return None
 
 
 # Route 1: Client Booking & Dispatches Proximity Email
@@ -108,7 +113,7 @@ async def create_job(job: JobSubmission):
 
     try:
         # Determine active jobs table variant
-        job_table = "freelance_applications"
+        job_table = "jobs"
         for t_name in ["jobs", "job", "service_requests"]:
             try:
                 supabase.table(t_name).select("id").limit(1).execute()
@@ -159,14 +164,13 @@ async def create_job(job: JobSubmission):
                 shortest_distance = distance
                 assigned_tech = tech
 
-        # Generate URLs for the technician dispatch email
+        # Generate URL for the technician dispatch email
         live_location_url = f"https://www.google.com/maps/search/?api=1&query={job.client_lat},{job.client_lng}"
 
         # Send emails via Resend
         mail_engine = get_resend_client()
         if mail_engine:
             try:
-                # Send critical details directly to the assigned tech's inbox
                 mail_engine.Emails.send({
                     "from": "MindStormerX Dispatch <alerts@mayndstomir.com>",
                     "to": [assigned_tech.get("email")],
@@ -196,7 +200,7 @@ async def create_job(job: JobSubmission):
         return JSONResponse(status_code=500, content={"error": f"Job processing crashed: {str(e)}"})
 
 
-# Route 2: Onboarding Endpoint (Accepts Image Upload URL for Kahramaa ID)
+# Route 2: Onboarding Endpoint
 @app.post("/freelance_applications")
 async def register_technician(tech: TechnicianApplication):
     if not supabase:
@@ -209,13 +213,12 @@ async def register_technician(tech: TechnicianApplication):
         "trade": tech.trade.lower(),
         "experience_years": tech.experience_years,
         "qid_number": tech.qid_number,
-        "kahramaa_id_url": tech.kahramaa_id_url,  # Saves the image upload reference path cleanly
+        "kahramaa_id_url": tech.kahramaa_id_url,
         "id_photo_url": tech.id_photo_url,
         "latitude": 25.2854,  
         "longitude": 51.5310
     }
 
-    # Bypasses PGRST125 table errors by checking your dashboard variants safely
     db_success = False
     last_err = ""
     
@@ -237,6 +240,3 @@ async def register_technician(tech: TechnicianApplication):
         "status": "success",
         "message": "Application uploaded and logged successfully!"
     }
-    @app.route("/", methods=["GET", "HEAD"])
-async def root_health_check(request: Request):
-    return {"status": "healthy"}
