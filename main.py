@@ -9,13 +9,20 @@ from supabase import create_client, Client
 # 1. Initialize FastAPI Application
 app = FastAPI(title="MindStormerX Live Production API")
 
-# 2. Configure Robust CORS Policy (Fixes CORS policy blockades globally)
+# 2. Configure Robust CORS Policy
+origins = [
+    "https://www.mayndstomir.com",
+    "https://mayndstomir.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows any frontend domain to talk to your backend
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all incoming request methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 3. Initialize Production API Engines (Maps directly to your Render Env variables)
