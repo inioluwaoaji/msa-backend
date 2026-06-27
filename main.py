@@ -163,7 +163,7 @@ async def create_job(job: JobSubmission):
 
 
 # Route 2: Onboarding Endpoint for Freelance Technicians
-@app.post("/freelance_applications")
+for table_name in ["freelance_applications", "technicians", "technician", "freelancers"]:
 async def register_technician(tech: TechnicianApplication):
     if not supabase:
         return JSONResponse(status_code=500, content={"error": "Supabase connection is uninitialized. Check Render Env variables."})
