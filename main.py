@@ -1,11 +1,18 @@
 import os
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 
-app = Flask(__name__)
-# Enable CORS for frontend handshakes
-CORS(app, resources={r"/*": {"origins": "*"}})
+app = FastAPI()
+
+# Enable CORS matching your original configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize Supabase Client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -16,18 +23,14 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-@app.route('/freelance_applications', methods=['POST', 'OPTIONS'])
-def handle_freelance_application():
-    # Handle preflight CORS requests cleanly
-    if request.method == 'OPTIONS':
-        return '', 200
-
+@app.post("/freelance_applications")
+async def handle_freelance_application(request: Request):
     try:
-        data = request.json
+        data = await request.json()
         if not data:
-            return jsonify({"error": "No data provided"}), 400
+            raise HTTPException(status_code=400, detail="No data provided")
 
-        # CRUCIAL FIX: Targeted 'freelance_applications' (plural) to match your database schema
+        # TARGETS THE PLURAL TABLE NAME TO FIX PGRST125
         response = supabase.table('freelance_applications').insert({
             "full_name": data.get("full_name"),
             "email": data.get("email"),
@@ -35,27 +38,16 @@ def handle_freelance_application():
             "qid_number": data.get("qid_number"),
             "years_of_experience": data.get("years_of_experience"),
             "trade": data.get("trade"),
-            "kahramaa_id_url": data.get("kahramaa_id_url"),  # URL from Olamiposi's upload step
+            "kahramaa_id_url": data.get("kahramaa_id_url"),
             "profile_photo_url": data.get("profile_photo_url")
         }).execute()
 
-        # Trigger your automated dispatch / background pipelines here if needed
-
-        return jsonify({
+        return {
             "status": "success", 
             "message": "Application saved successfully!",
             "data": response.data
-        }), 201
+        }
 
     except Exception as e:
         print(f"Backend Crash Log: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "Internal Server Error occurred during insertion.",
-            "details": str(e)
-        }), 500
-
-if __name__ == '__main__':
-    # Default port for Render deployments
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+        raise HTTPException(status_code=500, detail=str(e))
