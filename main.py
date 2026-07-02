@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 from supabase import create_client, Client
 
@@ -10,7 +10,7 @@ app = FastAPI(title="Maynd Stomir Backend API")
 # Configure CORS so Olamiposi's frontend can communicate with the backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this to specific domains in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,11 +28,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Define the data schema matching the frontend payload structure
 class FreelanceApplication(BaseModel):
     fullName: str
-    email: EmailStr
+    email: str  # Changed from EmailStr to str to fix the deployment ImportError
     phoneNumber: str
     position: str
     experienceYears: int
-    kahramaaIdUrl: str  # Dynamically accepts the Supabase storage bucket URL string
+    kahramaaIdUrl: str  
     notes: Optional[str] = None
 
 @app.get("/")
@@ -53,11 +53,10 @@ async def create_application(application: FreelanceApplication):
             "notes": application.notes
         }
         
-        # Fixed: Using the singular table name 'freelance_application' to prevent PGRST125 errors
+        # Target the singular table name
         response = supabase.table("freelance_application").insert(data).execute()
         
         return {"success": True, "data": response.data}
         
     except Exception as e:
-        # Wrap any database execution errors inside an Internal Server Error response
         raise HTTPException(status_code=500, detail=str(e))
