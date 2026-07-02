@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -7,7 +7,6 @@ from supabase import create_client, Client
 
 app = FastAPI(title="Maynd Stomir Backend API")
 
-# Configure CORS so Olamiposi's frontend can communicate with the backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Supabase Client using environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -25,14 +23,14 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Define the data schema matching the frontend payload structure
+# Updated schema matching Olamiposi's raw frontend payload keys exactly
 class FreelanceApplication(BaseModel):
-    fullName: str
-    email: str  # Changed from EmailStr to str to fix the deployment ImportError
-    phoneNumber: str
-    position: str
-    experienceYears: int
-    kahramaaIdUrl: str  
+    full_name: str
+    email: str
+    phone_number: str
+    trade: str  # Matches the 'trade' key sent from frontend
+    experience_years: int
+    kahramaa_id_url: str  
     notes: Optional[str] = None
 
 @app.get("/")
@@ -42,20 +40,18 @@ def read_root():
 @app.post("/freelance_applications")
 async def create_application(application: FreelanceApplication):
     try:
-        # Map the incoming camelCase payload to your database schema format
+        # Directly mapping the incoming snake_case parameters to database columns
         data = {
-            "full_name": application.fullName,
+            "full_name": application.full_name,
             "email": application.email,
-            "phone_number": application.phoneNumber,
-            "position": application.position,
-            "experience_years": application.experienceYears,
-            "kahramaa_id_url": application.kahramaaIdUrl,
+            "phone_number": application.phone_number,
+            "position": application.trade,  # Maps frontend 'trade' to backend database column 'position'
+            "experience_years": application.experience_years,
+            "kahramaa_id_url": application.kahramaa_id_url,
             "notes": application.notes
         }
         
-        # Target the singular table name
         response = supabase.table("freelance_application").insert(data).execute()
-        
         return {"success": True, "data": response.data}
         
     except Exception as e:
