@@ -49,8 +49,8 @@ async def create_application(application: FreelanceApplication):
             "notes": application.notes
         }
         
-        # Fixed: Changed back to plural 'freelance_applications' to match Supabase database path
-        response = supabase.table("freelance_applications").insert(data).execute()
+        # Fixed: Targeting the correct 'technicians' table name found in your dashboard
+        response = supabase.table("technicians").insert(data).execute()
         return {"success": True, "data": response.data}
         
     except Exception as e:
