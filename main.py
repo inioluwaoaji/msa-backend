@@ -23,13 +23,16 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Matches Olamiposi's payload fields exactly
 class FreelanceApplication(BaseModel):
     full_name: str
     email: str
     phone_number: str
     trade: str  
     experience_years: int
+    qid_number: str
     kahramaa_id_url: str  
+    id_photo_url: str
     notes: Optional[str] = None
 
 @app.get("/")
@@ -45,11 +48,13 @@ async def create_application(application: FreelanceApplication):
             "phone_number": application.phone_number,
             "position": application.trade,  
             "experience_years": application.experience_years,
+            "qid_number": application.qid_number,
             "kahramaa_id_url": application.kahramaa_id_url,
+            "id_photo_url": application.id_photo_url,
             "notes": application.notes
         }
         
-        # This line is fixed to point straight to the technicians table
+        # Pointing to the verified technicians table
         response = supabase.table("technicians").insert(data).execute()
         return {"success": True, "data": response.data}
         
