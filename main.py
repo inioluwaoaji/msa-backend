@@ -49,7 +49,7 @@ async def create_application(application: FreelanceApplication):
             "notes": application.notes
         }
         
-        # Fixed: Targeting the correct 'technicians' table name found in your dashboard
+        # This line is fixed to point straight to the technicians table
         response = supabase.table("technicians").insert(data).execute()
         return {"success": True, "data": response.data}
         
