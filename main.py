@@ -23,12 +23,11 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Updated schema matching Olamiposi's raw frontend payload keys exactly
 class FreelanceApplication(BaseModel):
     full_name: str
     email: str
     phone_number: str
-    trade: str  # Matches the 'trade' key sent from frontend
+    trade: str  
     experience_years: int
     kahramaa_id_url: str  
     notes: Optional[str] = None
@@ -40,18 +39,18 @@ def read_root():
 @app.post("/freelance_applications")
 async def create_application(application: FreelanceApplication):
     try:
-        # Directly mapping the incoming snake_case parameters to database columns
         data = {
             "full_name": application.full_name,
             "email": application.email,
             "phone_number": application.phone_number,
-            "position": application.trade,  # Maps frontend 'trade' to backend database column 'position'
+            "position": application.trade,  
             "experience_years": application.experience_years,
             "kahramaa_id_url": application.kahramaa_id_url,
             "notes": application.notes
         }
         
-        response = supabase.table("freelance_application").insert(data).execute()
+        # Fixed: Changed back to plural 'freelance_applications' to match Supabase database path
+        response = supabase.table("freelance_applications").insert(data).execute()
         return {"success": True, "data": response.data}
         
     except Exception as e:
