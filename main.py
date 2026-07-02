@@ -1,53 +1,63 @@
 import os
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 from supabase import create_client, Client
 
-app = FastAPI()
+app = FastAPI(title="Maynd Stomir Backend API")
 
-# Enable CORS matching your original configuration
+# Configure CORS so Olamiposi's frontend can communicate with the backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Adjust this to specific domains in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize Supabase Client
+# Initialize Supabase Client using environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables.")
+    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variables.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Define the data schema matching the frontend payload structure
+class FreelanceApplication(BaseModel):
+    fullName: str
+    email: EmailStr
+    phoneNumber: str
+    position: str
+    experienceYears: int
+    kahramaaIdUrl: str  # Dynamically accepts the Supabase storage bucket URL string
+    notes: Optional[str] = None
+
+@app.get("/")
+def read_root():
+    return {"status": "healthy", "message": "Maynd Stomir Backend API is running"}
+
 @app.post("/freelance_applications")
-async def handle_freelance_application(request: Request):
+async def create_application(application: FreelanceApplication):
     try:
-        data = await request.json()
-        if not data:
-            raise HTTPException(status_code=400, detail="No data provided")
-
-        # TARGETS THE PLURAL TABLE NAME TO FIX PGRST125
-        response = supabase.table('freelance_applications').insert({
-            "full_name": data.get("full_name"),
-            "email": data.get("email"),
-            "phone_number": data.get("phone_number"),
-            "qid_number": data.get("qid_number"),
-            "years_of_experience": data.get("years_of_experience"),
-            "trade": data.get("trade"),
-            "kahramaa_id_url": data.get("kahramaa_id_url"),
-            "profile_photo_url": data.get("profile_photo_url")
-        }).execute()
-
-        return {
-            "status": "success", 
-            "message": "Application saved successfully!",
-            "data": response.data
+        # Map the incoming camelCase payload to your database schema format
+        data = {
+            "full_name": application.fullName,
+            "email": application.email,
+            "phone_number": application.phoneNumber,
+            "position": application.position,
+            "experience_years": application.experienceYears,
+            "kahramaa_id_url": application.kahramaaIdUrl,
+            "notes": application.notes
         }
-
+        
+        # Fixed: Using the singular table name 'freelance_application' to prevent PGRST125 errors
+        response = supabase.table("freelance_application").insert(data).execute()
+        
+        return {"success": True, "data": response.data}
+        
     except Exception as e:
-        print(f"Backend Crash Log: {str(e)}")
+        # Wrap any database execution errors inside an Internal Server Error response
         raise HTTPException(status_code=500, detail=str(e))
