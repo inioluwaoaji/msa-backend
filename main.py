@@ -60,7 +60,7 @@ async def create_application(application: FreelanceApplication):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        class MaintenanceRequest(BaseModel):
+class MaintenanceRequest(BaseModel):
     full_name: str
     phone_number: str
     category: str
