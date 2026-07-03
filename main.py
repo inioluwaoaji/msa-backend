@@ -89,7 +89,9 @@ async def create_job(job: MaintenanceRequest):
         }
 
         response = supabase.table("jobs").insert(data).execute()
-        return {"success": True, "data": response.data}
+        job_data = response.data[0]
+        job_data["id"] = job_data.pop("uuid")
+        return {"success": True, "data": [job_data]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -99,7 +101,9 @@ async def get_job(job_id: int):
         response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
-        return {"success": True, "data": response.data[0]}
+        job_data = response.data[0]
+        job_data["id"] = job_data.pop("uuid")
+        return {"success": True, "data": job_data}
     except HTTPException:
         raise
     except Exception as e:
