@@ -108,7 +108,7 @@ async def get_job(job_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        @app.get("/jobs")
+@app.get("/jobs")
 async def get_all_jobs():
     try:
         response = supabase.table("jobs").select("*").execute()
