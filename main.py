@@ -93,3 +93,14 @@ async def create_job(job: MaintenanceRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: int):
+    try:
+        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"success": True, "data": response.data[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
