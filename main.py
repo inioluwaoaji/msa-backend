@@ -60,3 +60,36 @@ async def create_application(application: FreelanceApplication):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        class MaintenanceRequest(BaseModel):
+    full_name: str
+    phone_number: str
+    category: str
+    client_lat: Optional[float] = None
+    client_lng: Optional[float] = None
+    description: str
+    email: str
+    job_photo_url: Optional[str] = None
+    preferred_date: str
+    preferred_time: str
+
+@app.post("/jobs")
+async def create_job(job: MaintenanceRequest):
+    try:
+        combined_datetime = f"{job.preferred_date}T{job.preferred_time}:00"
+
+        data = {
+            "customer_name": job.full_name,
+            "phone_number": job.phone_number,
+            "category": job.category,
+            "description": job.description,
+            "email": job.email,
+            "photo_url": job.job_photo_url,
+            "customer_availability": combined_datetime,
+            "status": "pending"
+        }
+
+        response = supabase.table("jobs").insert(data).execute()
+        return {"success": True, "data": response.data}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
