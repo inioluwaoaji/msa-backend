@@ -43,16 +43,16 @@ def read_root():
 async def create_application(application: FreelanceApplication):
     try:
         data = {
-            "full_name": application.full_name,
-            "email": application.email,
-            "phone_number": application.phone_number,
-            "position": application.trade,  
-            "experience_years": application.experience_years,
-            "qid_number": application.qid_number,
-            "kahramaa_id_url": application.kahramaa_id_url,
-            "id_photo_url": application.id_photo_url,
-            "notes": application.notes
-        }
+    "full_name": application.full_name,
+    "email_address": application.email,
+    "phone_number": application.phone_number,
+    "trade_skill": application.trade,
+    "experience_years": application.experience_years,
+    "qid_number": application.qid_number,
+    "kahramaa_id_url": application.kahramaa_id_url,
+    "id_photo_url": application.id_photo_url,
+    "description": application.notes
+}
         
         # Pointing to the verified technicians table
         response = supabase.table("technicians").insert(data).execute()
