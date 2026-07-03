@@ -108,3 +108,40 @@ async def get_job(job_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        @app.get("/jobs")
+async def get_all_jobs():
+    try:
+        response = supabase.table("jobs").select("*").execute()
+        jobs = response.data
+        for job in jobs:
+            job["id"] = job.pop("uuid")
+        return {"success": True, "data": jobs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/jobs/lookup/{phone_number}")
+async def lookup_jobs_by_phone(phone_number: str):
+    try:
+        normalized = phone_number.strip().replace(" ", "").replace("-", "")
+        response = supabase.table("jobs").select("*").execute()
+        matches = [
+            j for j in response.data
+            if j.get("phone_number", "").strip().replace(" ", "").replace("-", "").endswith(normalized[-8:])
+        ]
+        for job in matches:
+            job["id"] = job.pop("uuid")
+        if not matches:
+            raise HTTPException(status_code=404, detail="No jobs found for this phone number")
+        return {"success": True, "data": matches}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/workers")
+async def get_all_technicians():
+    try:
+        response = supabase.table("technicians").select("*").execute()
+        return {"success": True, "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
