@@ -31,7 +31,7 @@ class FreelanceApplication(BaseModel):
     trade: str  
     experience_years: int
     qid_number: str
-    kahramaa_id_url: str  
+    kahramaa_id_url: Optional[str] = None
     id_photo_url: str
     notes: Optional[str] = None
 
@@ -41,23 +41,31 @@ def read_root():
 
 @app.post("/freelance_applications")
 async def create_application(application: FreelanceApplication):
+    TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
+
+    if application.trade.lower() in TRADES_REQUIRING_KAHRAMAA and not application.kahramaa_id_url:
+        raise HTTPException(
+            status_code=422,
+            detail=f"kahramaa_id_url is required for the trade: {application.trade}"
+        )
+
     try:
         data = {
-    "full_name": application.full_name,
-    "email_address": application.email,
-    "phone_number": application.phone_number,
-    "trade_skill": application.trade,
-    "experience_years": application.experience_years,
-    "qid_number": application.qid_number,
-    "kahramaa_id_url": application.kahramaa_id_url,
-    "id_photo_url": application.id_photo_url,
-    "description": application.notes
-}
-        
+            "full_name": application.full_name,
+            "email_address": application.email,
+            "phone_number": application.phone_number,
+            "trade_skill": application.trade,
+            "experience_years": application.experience_years,
+            "qid_number": application.qid_number,
+            "kahramaa_id_url": application.kahramaa_id_url,
+            "id_photo_url": application.id_photo_url,
+            "description": application.notes
+        }
+
         # Pointing to the verified technicians table
         response = supabase.table("technicians").insert(data).execute()
         return {"success": True, "data": response.data}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 class MaintenanceRequest(BaseModel):
