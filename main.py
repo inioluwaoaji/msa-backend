@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from supabase import create_client, Client
-
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 app = FastAPI(title="Maynd Stomir Backend API")
 
 app.add_middleware(
@@ -22,7 +24,23 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variables.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+ZOHO_EMAIL = os.environ.get("ZOHO_EMAIL")
+ZOHO_APP_PASSWORD = os.environ.get("ZOHO_APP_PASSWORD")
 
+def send_technician_email(to_email: str, subject: str, html_content: str):
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = ZOHO_EMAIL
+        msg["To"] = to_email
+        msg.attach(MIMEText(html_content, "html"))
+
+        with smtplib.SMTP("smtp.zoho.com", 587) as server:
+            server.starttls()
+            server.login(ZOHO_EMAIL, ZOHO_APP_PASSWORD)
+            server.sendmail(ZOHO_EMAIL, to_email, msg.as_string())
+    except Exception as e:
+        print(f"Email failed to send: {e}")
 # Matches Olamiposi's payload fields exactly
 class FreelanceApplication(BaseModel):
     full_name: str
@@ -98,12 +116,41 @@ async def create_job(job: MaintenanceRequest):
 
         response = supabase.table("jobs").insert(data).execute()
         job_data = response.data[0]
+        job_id = job_data["uuid"]
+
+        tech_response = supabase.table("technicians").select("*").ilike("trade_skill", job.category).execute()
+
+        if tech_response.data:
+            technician = tech_response.data[0]
+            assigned_name = technician.get("full_name")
+
+            supabase.table("jobs").update({"assigned_technician": assigned_name}).eq("uuid", job_id).execute()
+            job_data["assigned_technician"] = assigned_name
+
+            maps_link = ""
+            if job.client_lat and job.client_lng:
+                maps_link = f"https://www.google.com/maps?q={job.client_lat},{job.client_lng}"
+
+            email_html = f"""
+            <h2>New {job.category.upper()} Job Assigned</h2>
+            <p><strong>Problem:</strong> {job.description}</p>
+            <p><strong>Client Phone:</strong> {job.phone_number}</p>
+            {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+            """
+
+            if ZOHO_EMAIL and ZOHO_APP_PASSWORD:
+                send_technician_email(
+                    to_email=technician.get("email_address"),
+                    subject=f"New {job.category.upper()} Job - Action Needed",
+                    html_content=email_html
+                )
+
         job_data["id"] = job_data.pop("uuid")
         return {"success": True, "data": [job_data]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-@app.get("/jobs/{job_id}")
+ @app.get("/jobs/{job_id}")
 async def get_job(job_id: int):
     try:
         response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
