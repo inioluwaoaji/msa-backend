@@ -35,8 +35,7 @@ def send_technician_email(to_email: str, subject: str, html_content: str):
         msg["To"] = to_email
         msg.attach(MIMEText(html_content, "html"))
 
-        with smtplib.SMTP("smtp.zoho.com", 587) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL("smtp.zoho.com", 465) as server:
             server.login(ZOHO_EMAIL, ZOHO_APP_PASSWORD)
             server.sendmail(ZOHO_EMAIL, to_email, msg.as_string())
     except Exception as e:
