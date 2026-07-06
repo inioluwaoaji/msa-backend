@@ -118,15 +118,26 @@ async def create_job(job: MaintenanceRequest):
 
         tech_response = supabase.table("technicians").select("*").ilike("trade_skill", job.category).execute()
 
+        technician = None
         if tech_response.data:
-            technician = tech_response.data[0]
+            for candidate in tech_response.data:
+                candidate_id = candidate.get("uuid")
+                active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).eq("status", "assigned").execute()
+                if not active_jobs.data:
+                    technician = candidate
+                    break
+
+        if technician:
             assigned_name = technician.get("full_name")
+            assigned_id = technician.get("uuid")
 
             supabase.table("jobs").update({
                 "assigned_technician": assigned_name,
+                "assigned_technician_id": assigned_id,
                 "status": "assigned"
             }).eq("uuid", job_id).execute()
             job_data["assigned_technician"] = assigned_name
+            job_data["assigned_technician_id"] = assigned_id
             job_data["status"] = "assigned"
 
             maps_link = ""
