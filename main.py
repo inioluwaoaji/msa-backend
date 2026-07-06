@@ -122,8 +122,12 @@ async def create_job(job: MaintenanceRequest):
             technician = tech_response.data[0]
             assigned_name = technician.get("full_name")
 
-            supabase.table("jobs").update({"assigned_technician": assigned_name}).eq("uuid", job_id).execute()
+            supabase.table("jobs").update({
+                "assigned_technician": assigned_name,
+                "status": "assigned"
+            }).eq("uuid", job_id).execute()
             job_data["assigned_technician"] = assigned_name
+            job_data["status"] = "assigned"
 
             maps_link = ""
             if job.client_lat and job.client_lng:
