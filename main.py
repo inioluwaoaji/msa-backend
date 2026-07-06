@@ -4,9 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from supabase import create_client, Client
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import resend
 app = FastAPI(title="Maynd Stomir Backend API")
 
 app.add_middleware(
@@ -24,20 +22,21 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variables.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-ZOHO_EMAIL = os.environ.get("ZOHO_EMAIL")
-ZOHO_APP_PASSWORD = os.environ.get("ZOHO_APP_PASSWORD")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+if RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
 
-def send_technician_email(to_email: str, subject: str, html_content: str):
+def send_email(to_email: str, subject: str, html_content: str):
+    if not RESEND_API_KEY:
+        print("Resend API key not set — skipping email")
+        return
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = ZOHO_EMAIL
-        msg["To"] = to_email
-        msg.attach(MIMEText(html_content, "html"))
-
-        with smtplib.SMTP_SSL("smtp.zoho.com", 465) as server:
-            server.login(ZOHO_EMAIL, ZOHO_APP_PASSWORD)
-            server.sendmail(ZOHO_EMAIL, to_email, msg.as_string())
+        resend.Emails.send({
+            "from": "MSA Dispatch <dispatch@mayndstomir.com>",
+            "to": to_email,
+            "subject": subject,
+            "html": html_content
+        })
     except Exception as e:
         print(f"Email failed to send: {e}")
 # Matches Olamiposi's payload fields exactly
@@ -137,12 +136,24 @@ async def create_job(job: MaintenanceRequest):
             {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
             """
 
-            if ZOHO_EMAIL and ZOHO_APP_PASSWORD:
-                send_technician_email(
-                    to_email=technician.get("email_address"),
-                    subject=f"New {job.category.upper()} Job - Action Needed",
-                    html_content=email_html
-                )
+            send_email(
+                to_email=technician.get("email_address"),
+                subject=f"New {job.category.upper()} Job - Action Needed",
+                html_content=email_html
+            )
+
+        client_email_html = f"""
+        <h2>Your Request Has Been Assigned</h2>
+        <p>Hi {job.full_name},</p>
+        <p>Your maintenance request for <strong>{job.category}</strong> has been assigned to a technician who will contact you shortly.</p>
+        <p><strong>Description:</strong> {job.description}</p>
+        """
+
+        send_email(
+            to_email=job.email,
+            subject="Your Maintenance Request Has Been Assigned",
+            html_content=client_email_html
+        )
 
         job_data["id"] = job_data.pop("uuid")
         return {"success": True, "data": [job_data]}
