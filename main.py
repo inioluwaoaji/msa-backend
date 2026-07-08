@@ -225,3 +225,29 @@ async def get_all_technicians():
         return {"success": True, "data": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.patch("/jobs/{job_id}/complete")
+async def complete_job(job_id: int):
+    try:
+        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+
+        supabase.table("jobs").update({"status": "completed"}).eq("uuid", job_id).execute()
+
+        technician_id = job.get("assigned_technician_id")
+        if technician_id:
+            tech_response = supabase.table("technicians").select("completed_jobs_count").eq("uuid", technician_id).execute()
+            if tech_response.data:
+                current_count = tech_response.data[0].get("completed_jobs_count") or 0
+                supabase.table("technicians").update({
+                    "completed_jobs_count": current_count + 1
+                }).eq("uuid", technician_id).execute()
+
+        return {"success": True, "message": "Job marked as completed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
