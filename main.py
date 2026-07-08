@@ -109,7 +109,9 @@ async def create_job(job: MaintenanceRequest):
             "email": job.email,
             "photo_url": job.job_photo_url,
             "customer_availability": combined_datetime,
-            "status": "pending"
+            "status": "pending",
+            "client_lat": job.client_lat,
+            "client_lng": job.client_lng
         }
 
         response = supabase.table("jobs").insert(data).execute()
@@ -246,6 +248,53 @@ async def complete_job(job_id: int):
                 }).eq("uuid", technician_id).execute()
 
         return {"success": True, "message": "Job marked as completed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+class ReassignRequest(BaseModel):
+    technician_id: int
+
+@app.patch("/jobs/{job_id}/reassign")
+async def reassign_job(job_id: int, body: ReassignRequest):
+    try:
+        job_response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        if not job_response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        tech_response = supabase.table("technicians").select("*").eq("uuid", body.technician_id).execute()
+        if not tech_response.data:
+            raise HTTPException(status_code=404, detail="Technician not found")
+
+        job = job_response.data[0]
+        technician = tech_response.data[0]
+        assigned_name = technician.get("full_name")
+
+        supabase.table("jobs").update({
+            "assigned_technician": assigned_name,
+            "assigned_technician_id": body.technician_id,
+            "status": "assigned"
+        }).eq("uuid", job_id).execute()
+
+        maps_link = ""
+        if job.get("client_lat") and job.get("client_lng"):
+            maps_link = f"https://www.google.com/maps?q={job['client_lat']},{job['client_lng']}"
+
+        email_html = f"""
+        <h2>Job Reassigned To You</h2>
+        <p><strong>Problem:</strong> {job.get('description')}</p>
+        <p><strong>Client Phone:</strong> {job.get('phone_number')}</p>
+        {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+        """
+
+        send_email(
+            to_email=technician.get("email_address"),
+            subject=f"Job Reassigned To You - Action Needed",
+            html_content=email_html
+        )
+
+        return {"success": True, "message": f"Job {job_id} reassigned to {assigned_name}"}
 
     except HTTPException:
         raise
