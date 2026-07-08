@@ -39,6 +39,15 @@ def send_email(to_email: str, subject: str, html_content: str):
         })
     except Exception as e:
         print(f"Email failed to send: {e}")
+from fastapi import Header, Depends
+
+API_KEY = os.environ.get("API_KEY")
+
+def verify_api_key(x_api_key: str = Header(None)):
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Server API key not configured")
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 # Matches Olamiposi's payload fields exactly
 class FreelanceApplication(BaseModel):
     full_name: str
@@ -55,7 +64,7 @@ class FreelanceApplication(BaseModel):
 def read_root():
     return {"status": "healthy", "message": "Maynd Stomir Backend API is running"}
 
-@app.post("/freelance_applications")
+@app.post("/freelance_applications", dependencies=[Depends(verify_api_key)])
 async def create_application(application: FreelanceApplication):
     TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
 
@@ -96,7 +105,7 @@ class MaintenanceRequest(BaseModel):
     preferred_date: str
     preferred_time: str
 
-@app.post("/jobs")
+@app.post("/jobs", dependencies=[Depends(verify_api_key)])
 async def create_job(job: MaintenanceRequest):
     try:
         combined_datetime = f"{job.preferred_date}T{job.preferred_time}:00"
@@ -177,7 +186,7 @@ async def create_job(job: MaintenanceRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
 async def get_job(job_id: int):
     try:
         response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
@@ -190,7 +199,7 @@ async def get_job(job_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-@app.get("/jobs")
+@app.get("/jobs", dependencies=[Depends(verify_api_key)])
 async def get_all_jobs():
     try:
         response = supabase.table("jobs").select("*").execute()
@@ -201,7 +210,7 @@ async def get_all_jobs():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/jobs/lookup/{phone_number}")
+@app.get("/jobs/lookup/{phone_number}", dependencies=[Depends(verify_api_key)])
 async def lookup_jobs_by_phone(phone_number: str):
     try:
         normalized = phone_number.strip().replace(" ", "").replace("-", "")
@@ -220,14 +229,14 @@ async def lookup_jobs_by_phone(phone_number: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/workers")
+@app.get("/workers", dependencies=[Depends(verify_api_key)])
 async def get_all_technicians():
     try:
         response = supabase.table("technicians").select("*").execute()
         return {"success": True, "data": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-@app.patch("/jobs/{job_id}/complete")
+@app.patch("/jobs/{job_id}/complete", dependencies=[Depends(verify_api_key)])
 async def complete_job(job_id: int):
     try:
         response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
@@ -256,7 +265,7 @@ async def complete_job(job_id: int):
 class ReassignRequest(BaseModel):
     technician_id: int
 
-@app.patch("/jobs/{job_id}/reassign")
+@app.patch("/jobs/{job_id}/reassign", dependencies=[Depends(verify_api_key)])
 async def reassign_job(job_id: int, body: ReassignRequest):
     try:
         job_response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
