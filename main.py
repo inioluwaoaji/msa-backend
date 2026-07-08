@@ -32,7 +32,7 @@ def send_email(to_email: str, subject: str, html_content: str):
         return
     try:
         resend.Emails.send({
-            "from": "MSA Dispatch <dispatch@mayndstomir.com>",
+            "from": "MSA Dispatch <customerservice@mayndstomir.com>",
             "to": to_email,
             "subject": subject,
             "html": html_content
