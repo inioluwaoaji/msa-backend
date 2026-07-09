@@ -227,6 +227,10 @@ async def create_job(request: Request, job: MaintenanceRequest):
             job_data["assigned_technician"] = assigned_name
             job_data["assigned_technician_id"] = assigned_id
             job_data["status"] = "assigned"
+            current_assigned = technician.get("assigned_jobs_count") or 0
+            supabase.table("technicians").update({
+                "assigned_jobs_count": current_assigned + 1
+            }).eq("uuid", assigned_id).execute()
 
             maps_link = ""
             if job.client_lat and job.client_lng:
@@ -316,6 +320,8 @@ async def get_all_technicians():
             tech_id = tech.get("uuid")
             active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
             tech["status"] = "Assigned" if active_jobs.data else "Available"
+            tech["assigned_jobs_count"] = tech.get("assigned_jobs_count") or 0
+            tech["completed_jobs_count"] = tech.get("completed_jobs_count") or 0
 
         return {"success": True, "data": technicians}
     except Exception as e:
@@ -333,11 +339,13 @@ async def complete_job(job_id: int):
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
-            tech_response = supabase.table("technicians").select("completed_jobs_count").eq("uuid", technician_id).execute()
+            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count").eq("uuid", technician_id).execute()
             if tech_response.data:
-                current_count = tech_response.data[0].get("completed_jobs_count") or 0
+                current_completed = tech_response.data[0].get("completed_jobs_count") or 0
+                current_assigned = tech_response.data[0].get("assigned_jobs_count") or 0
                 supabase.table("technicians").update({
-                    "completed_jobs_count": current_count + 1
+                    "completed_jobs_count": current_completed + 1,
+                    "assigned_jobs_count": max(current_assigned - 1, 0)
                 }).eq("uuid", technician_id).execute()
 
         return {"success": True, "message": "Job marked as completed"}
@@ -425,6 +433,25 @@ async def cancel_job(job_id: int):
             raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
 
         supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", job_id).execute()
+
+        cancellation_email_html = f"""
+        <h2>Your Request Has Been Cancelled</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your maintenance request for <strong>{job.get('category')}</strong> has been successfully cancelled as requested.</p>
+        <p><strong>Description:</strong> {job.get('description')}</p>
+        """
+
+        send_email(
+            to_email=job.get("email"),
+            subject="Your Maintenance Request Has Been Cancelled",
+            html_content=cancellation_email_html
+        )
+
+        send_email(
+            to_email="customerservice@mayndstomir.com",
+            subject="A Job Was Cancelled",
+            html_content=cancellation_email_html
+        )
 
         return {"success": True, "message": "Job cancelled successfully"}
 
