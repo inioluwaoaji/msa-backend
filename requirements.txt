@@ -4,3 +4,4 @@ supabase
 httpx
 pydantic
 resend
+slowapi

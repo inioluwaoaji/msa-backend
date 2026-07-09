@@ -4,8 +4,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from supabase import create_client, Client
-import resend
+import resend 
+from fastapi import Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 app = FastAPI(title="Maynd Stomir Backend API")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,7 +78,8 @@ def read_root():
     return {"status": "healthy", "message": "Maynd Stomir Backend API is running"}
 
 @app.post("/freelance_applications", dependencies=[Depends(verify_api_key)])
-async def create_application(application: FreelanceApplication):
+@limiter.limit("5/minute")
+async def create_application(request: Request, application: FreelanceApplication):
     TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
 
     if application.trade.lower() in TRADES_REQUIRING_KAHRAMAA and not application.kahramaa_id_url:
@@ -110,7 +120,8 @@ class MaintenanceRequest(BaseModel):
     preferred_time: str
 
 @app.post("/jobs", dependencies=[Depends(verify_api_key)])
-async def create_job(job: MaintenanceRequest):
+@limiter.limit("5/minute")
+async def create_job(request: Request, job: MaintenanceRequest):
     try:
         combined_datetime = f"{job.preferred_date}T{job.preferred_time}:00"
 
