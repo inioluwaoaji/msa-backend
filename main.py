@@ -14,6 +14,21 @@ def calculate_distance(lat1, lng1, lat2, lng2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
+CATEGORY_SYNONYMS = {
+    "ac": "hvac",
+    "air conditioning": "hvac",
+    "aircon": "hvac",
+    "ac repair": "hvac",
+    "plumber": "plumbing",
+    "electrician": "electrical",
+    "carpenter": "carpentry",
+}
+
+def normalize_category(value: str) -> str:
+    if not value:
+        return ""
+    cleaned = value.strip().lower()
+    return CATEGORY_SYNONYMS.get(cleaned, cleaned)
 from fastapi import Request
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -51,6 +66,14 @@ if RESEND_API_KEY:
 def send_email(to_email: str, subject: str, html_content: str):
     if not RESEND_API_KEY:
         print("Resend API key not set — skipping email")
+        try:
+            supabase.table("email_failures").insert({
+                "to_email": to_email,
+                "subject": subject,
+                "error_message": "Resend API key not set"
+            }).execute()
+        except Exception:
+            pass
         return
     try:
         resend.Emails.send({
@@ -61,6 +84,14 @@ def send_email(to_email: str, subject: str, html_content: str):
         })
     except Exception as e:
         print(f"Email failed to send: {e}")
+        try:
+            supabase.table("email_failures").insert({
+                "to_email": to_email,
+                "subject": subject,
+                "error_message": str(e)
+            }).execute()
+        except Exception:
+            pass
 from fastapi import Header, Depends
 
 API_KEY = os.environ.get("API_KEY")
@@ -155,7 +186,12 @@ async def create_job(request: Request, job: MaintenanceRequest):
         job_data = response.data[0]
         job_id = job_data["uuid"]
 
-        tech_response = supabase.table("technicians").select("*").ilike("trade_skill", job.category).execute()
+        normalized_category = normalize_category(job.category)
+        tech_response = supabase.table("technicians").select("*").execute()
+        tech_response.data = [
+            t for t in tech_response.data
+            if normalize_category(t.get("trade_skill", "")) == normalized_category
+        ]
 
         available_technicians = []
         if tech_response.data:
@@ -347,5 +383,12 @@ async def reassign_job(job_id: int, body: ReassignRequest):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        @app.get("/email_failures", dependencies=[Depends(verify_api_key)])
+async def get_email_failures():
+    try:
+        response = supabase.table("email_failures").select("*").order("created_at", desc=True).execute()
+        return {"success": True, "data": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
