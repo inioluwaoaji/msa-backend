@@ -6,6 +6,7 @@ from typing import Optional
 from supabase import create_client, Client
 import resend 
 import math
+from datetime import datetime, timezone
 
 def calculate_distance(lat1, lng1, lat2, lng2):
     R = 6371
@@ -309,7 +310,14 @@ async def lookup_jobs_by_phone(phone_number: str):
 async def get_all_technicians():
     try:
         response = supabase.table("technicians").select("*").execute()
-        return {"success": True, "data": response.data}
+        technicians = response.data
+
+        for tech in technicians:
+            tech_id = tech.get("uuid")
+            active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
+            tech["status"] = "Assigned" if active_jobs.data else "Available"
+
+        return {"success": True, "data": technicians}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 @app.patch("/jobs/{job_id}/complete", dependencies=[Depends(verify_api_key)])
@@ -391,5 +399,36 @@ async def get_email_failures():
     try:
         response = supabase.table("email_failures").select("*").order("created_at", desc=True).execute()
         return {"success": True, "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/jobs/{job_id}/cancel", dependencies=[Depends(verify_api_key)])
+async def cancel_job(job_id: int):
+    try:
+        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+
+        if job.get("status") == "completed":
+            raise HTTPException(status_code=400, detail="Cannot cancel a completed job")
+        if job.get("status") == "cancelled":
+            raise HTTPException(status_code=400, detail="Job is already cancelled")
+
+        created_at_str = job.get("created_at")
+        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        hours_passed = (now - created_at).total_seconds() / 3600
+
+        if hours_passed > 2:
+            raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
+
+        supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", job_id).execute()
+
+        return {"success": True, "message": "Job cancelled successfully"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
