@@ -9,7 +9,11 @@ app = FastAPI(title="Maynd Stomir Backend API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://mayndstomir.com",
+        "https://www.mayndstomir.com",
+        "https://maynd-stomir.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
