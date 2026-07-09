@@ -385,7 +385,8 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        @app.get("/email_failures", dependencies=[Depends(verify_api_key)])
+
+@app.get("/email_failures", dependencies=[Depends(verify_api_key)])
 async def get_email_failures():
     try:
         response = supabase.table("email_failures").select("*").order("created_at", desc=True).execute()
