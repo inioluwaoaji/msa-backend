@@ -5,6 +5,15 @@ from pydantic import BaseModel
 from typing import Optional
 from supabase import create_client, Client
 import resend 
+import math
+
+def calculate_distance(lat1, lng1, lat2, lng2):
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
 from fastapi import Request
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -72,6 +81,8 @@ class FreelanceApplication(BaseModel):
     kahramaa_id_url: Optional[str] = None
     id_photo_url: str
     notes: Optional[str] = None
+    tech_lat: Optional[float] = None
+    tech_lng: Optional[float] = None
 
 @app.get("/")
 def read_root():
@@ -98,7 +109,9 @@ async def create_application(request: Request, application: FreelanceApplication
             "qid_number": application.qid_number,
             "kahramaa_id_url": application.kahramaa_id_url,
             "id_photo_url": application.id_photo_url,
-            "description": application.notes
+            "description": application.notes,
+            "tech_lat": application.tech_lat,
+            "tech_lng": application.tech_lng
         }
 
         # Pointing to the verified technicians table
@@ -144,14 +157,26 @@ async def create_job(request: Request, job: MaintenanceRequest):
 
         tech_response = supabase.table("technicians").select("*").ilike("trade_skill", job.category).execute()
 
-        technician = None
+        available_technicians = []
         if tech_response.data:
             for candidate in tech_response.data:
                 candidate_id = candidate.get("uuid")
                 active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).eq("status", "assigned").execute()
                 if not active_jobs.data:
-                    technician = candidate
-                    break
+                    available_technicians.append(candidate)
+
+        technician = None
+        if available_technicians and job.client_lat and job.client_lng:
+            technicians_with_location = [t for t in available_technicians if t.get("tech_lat") and t.get("tech_lng")]
+            if technicians_with_location:
+                technician = min(
+                    technicians_with_location,
+                    key=lambda t: calculate_distance(job.client_lat, job.client_lng, t.get("tech_lat"), t.get("tech_lng"))
+                )
+            else:
+                technician = available_technicians[0]
+        elif available_technicians:
+            technician = available_technicians[0]
 
         if technician:
             assigned_name = technician.get("full_name")
