@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from supabase import create_client, Client
 import resend 
 import math
@@ -107,7 +107,7 @@ class FreelanceApplication(BaseModel):
     full_name: str
     email: str
     phone_number: str
-    trade: str  
+    trade: List[str]
     experience_years: int
     qid_number: str
     kahramaa_id_url: Optional[str] = None
@@ -125,7 +125,7 @@ def read_root():
 async def create_application(request: Request, application: FreelanceApplication):
     TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
 
-    if application.trade.lower() in TRADES_REQUIRING_KAHRAMAA and not application.kahramaa_id_url:
+    if any(t.lower() in TRADES_REQUIRING_KAHRAMAA for t in application.trade) and not application.kahramaa_id_url:
         raise HTTPException(
             status_code=422,
             detail=f"kahramaa_id_url is required for the trade: {application.trade}"
@@ -191,7 +191,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         tech_response = supabase.table("technicians").select("*").execute()
         tech_response.data = [
             t for t in tech_response.data
-            if normalize_category(t.get("trade_skill", "")) == normalized_category
+            if normalized_category in [normalize_category(skill) for skill in (t.get("trade_skill") or [])]
         ]
 
         available_technicians = []
