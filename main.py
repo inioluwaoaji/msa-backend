@@ -24,7 +24,27 @@ CATEGORY_SYNONYMS = {
     "electrician": "electrical",
     "carpenter": "carpentry",
 }
+ 
+CATEGORY_DISPLAY_NAMES = {
+    "hvac": "HVAC",
+    "plumbing": "Plumbing",
+    "electrical": "Electrical",
+    "painting": "Painting",
+    "carpentry": "Carpentry",
+    "flooring": "Flooring",
+    "appliance_repair": "Appliance Repair",
+    "cleaning": "Deep Cleaning",
+    "pest_control": "Pest Control",
+    "masonry": "Masonry & Tiling",
+    "glass_windows": "Glass & Windows",
+    "locks_security": "Locks & Security",
+    "other": "Other"
+}
 
+def get_display_category(raw_value):
+    if not raw_value:
+        return raw_value
+    return CATEGORY_DISPLAY_NAMES.get(raw_value.strip().lower(), raw_value)
 def normalize_category(value: str) -> str:
     if not value:
         return ""
@@ -224,9 +244,13 @@ async def create_job(request: Request, job: MaintenanceRequest):
                 "assigned_technician_id": assigned_id,
                 "status": "assigned"
             }).eq("uuid", job_id).execute()
-            job_data["assigned_technician"] = assigned_name
+            job_data["assigned_technician"] = {
+                "name": assigned_name,
+                "phone": technician.get("phone_number")
+            }
             job_data["assigned_technician_id"] = assigned_id
             job_data["status"] = "assigned"
+
             current_assigned = technician.get("assigned_jobs_count") or 0
             supabase.table("technicians").update({
                 "assigned_jobs_count": current_assigned + 1
@@ -275,6 +299,14 @@ async def get_job(job_id: int):
             raise HTTPException(status_code=404, detail="Job not found")
         job_data = response.data[0]
         job_data["id"] = job_data.pop("uuid")
+        job_data["category"] = get_display_category(job_data.get("category"))
+        if job_data.get("assigned_technician_id"):
+            tech_lookup = supabase.table("technicians").select("full_name, phone_number").eq("uuid", job_data["assigned_technician_id"]).execute()
+            if tech_lookup.data:
+                job_data["assigned_technician"] = {
+                    "name": tech_lookup.data[0].get("full_name"),
+                    "phone": tech_lookup.data[0].get("phone_number")
+                }
         return {"success": True, "data": job_data}
     except HTTPException:
         raise
@@ -287,6 +319,14 @@ async def get_all_jobs():
         jobs = response.data
         for job in jobs:
             job["id"] = job.pop("uuid")
+            job["category"] = get_display_category(job.get("category"))
+            if job.get("assigned_technician_id"):
+                tech_lookup = supabase.table("technicians").select("full_name, phone_number").eq("uuid", job["assigned_technician_id"]).execute()
+                if tech_lookup.data:
+                    job["assigned_technician"] = {
+                        "name": tech_lookup.data[0].get("full_name"),
+                        "phone": tech_lookup.data[0].get("phone_number")
+                    }
         return {"success": True, "data": jobs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -320,6 +360,7 @@ async def get_all_technicians():
             tech_id = tech.get("uuid")
             active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
             tech["status"] = "Assigned" if active_jobs.data else "Available"
+            tech["trade_skill"] = [get_display_category(t) for t in (tech.get("trade_skill") or [])]
             tech["assigned_jobs_count"] = tech.get("assigned_jobs_count") or 0
             tech["completed_jobs_count"] = tech.get("completed_jobs_count") or 0
 
@@ -339,14 +380,40 @@ async def complete_job(job_id: int):
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
-            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count").eq("uuid", technician_id).execute()
+            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count, email_address, full_name").eq("uuid", technician_id).execute()
             if tech_response.data:
-                current_completed = tech_response.data[0].get("completed_jobs_count") or 0
-                current_assigned = tech_response.data[0].get("assigned_jobs_count") or 0
+                technician = tech_response.data[0]
+                current_completed = technician.get("completed_jobs_count") or 0
+                current_assigned = technician.get("assigned_jobs_count") or 0
                 supabase.table("technicians").update({
                     "completed_jobs_count": current_completed + 1,
                     "assigned_jobs_count": max(current_assigned - 1, 0)
                 }).eq("uuid", technician_id).execute()
+
+                completion_email_html = f"""
+                <h2>Job Marked as Completed</h2>
+                <p><strong>Client:</strong> {job.get('customer_name')}</p>
+                <p><strong>Description:</strong> {job.get('description')}</p>
+                <p>This job has been marked as completed. Thank you for your work!</p>
+                """
+
+                send_email(
+                    to_email=technician.get("email_address"),
+                    subject="Job Completed",
+                    html_content=completion_email_html
+                )
+
+        client_completion_email_html = f"""
+        <h2>Your Request Has Been Completed</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your maintenance request for <strong>{job.get('category')}</strong> has been marked as completed. Thank you for using Maynd Stomir!</p>
+        """
+
+        send_email(
+            to_email=job.get("email"),
+            subject="Your Maintenance Request Has Been Completed",
+            html_content=client_completion_email_html
+        )
 
         return {"success": True, "message": "Job marked as completed"}
 
@@ -433,6 +500,15 @@ async def cancel_job(job_id: int):
             raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
 
         supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", job_id).execute()
+
+        technician_id = job.get("assigned_technician_id")
+        if technician_id:
+            tech_response = supabase.table("technicians").select("assigned_jobs_count").eq("uuid", technician_id).execute()
+            if tech_response.data:
+                current_assigned = tech_response.data[0].get("assigned_jobs_count") or 0
+                supabase.table("technicians").update({
+                    "assigned_jobs_count": max(current_assigned - 1, 0)
+                }).eq("uuid", technician_id).execute()
 
         cancellation_email_html = f"""
         <h2>Your Request Has Been Cancelled</h2>
