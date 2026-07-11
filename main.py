@@ -212,6 +212,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         tech_response.data = [
             t for t in tech_response.data
             if normalized_category in [normalize_category(skill) for skill in (t.get("trade_skill") or [])]
+            and t.get("is_approved") is True
         ]
 
         available_technicians = []
@@ -360,6 +361,7 @@ async def get_all_technicians():
             tech_id = tech.get("uuid")
             active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
             tech["status"] = "Assigned" if active_jobs.data else "Available"
+            tech["is_approved"] = tech.get("is_approved") or False
             tech["trade_skill"] = [get_display_category(t) for t in (tech.get("trade_skill") or [])]
             tech["assigned_jobs_count"] = tech.get("assigned_jobs_count") or 0
             tech["completed_jobs_count"] = tech.get("completed_jobs_count") or 0
@@ -530,6 +532,49 @@ async def cancel_job(job_id: int):
         )
 
         return {"success": True, "message": "Job cancelled successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+class ApprovalUpdate(BaseModel):
+    is_approved: bool
+
+@app.patch("/workers/{worker_id}/approve", dependencies=[Depends(verify_api_key)])
+async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
+    try:
+        response = supabase.table("technicians").select("*").eq("uuid", worker_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Technician not found")
+
+        technician = response.data[0]
+
+        supabase.table("technicians").update({"is_approved": body.is_approved}).eq("uuid", worker_id).execute()
+
+        if body.is_approved:
+            approval_email_html = f"""
+            <h2>Application Approved</h2>
+            <p>Hi {technician.get('full_name')},</p>
+            <p>Congratulations! Your application to join Maynd Stomir has been approved. You're now eligible to receive job assignments.</p>
+            """
+            send_email(
+                to_email=technician.get("email_address"),
+                subject="Your Application Has Been Approved",
+                html_content=approval_email_html
+            )
+        else:
+            rejection_email_html = f"""
+            <h2>Application Update</h2>
+            <p>Hi {technician.get('full_name')},</p>
+            <p>Thank you for your interest in joining Maynd Stomir. After reviewing your application, we're unable to move forward at this time.</p>
+            """
+            send_email(
+                to_email=technician.get("email_address"),
+                subject="Update on Your Application",
+                html_content=rejection_email_html
+            )
+
+        return {"success": True, "message": f"Technician approval status set to {body.is_approved}"}
 
     except HTTPException:
         raise
