@@ -359,9 +359,17 @@ async def get_all_technicians():
 
         for tech in technicians:
             tech_id = tech.get("uuid")
-            active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
-            tech["status"] = "Assigned" if active_jobs.data else "Available"
-            tech["is_approved"] = tech.get("is_approved") or False
+            approval = tech.get("approval_status") or "pending"
+
+            if approval == "pending":
+                tech["status"] = "awaiting_approval"
+            elif approval == "rejected":
+                tech["status"] = "rejected"
+            else:
+                active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
+                tech["status"] = "assigned" if active_jobs.data else "available"
+
+            tech["approval_status"] = approval
             tech["trade_skill"] = [get_display_category(t) for t in (tech.get("trade_skill") or [])]
             tech["assigned_jobs_count"] = tech.get("assigned_jobs_count") or 0
             tech["completed_jobs_count"] = tech.get("completed_jobs_count") or 0
@@ -538,43 +546,42 @@ async def cancel_job(job_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 class ApprovalUpdate(BaseModel):
-    is_approved: bool
+    approval_status: str  # "approved" or "rejected"
 
 @app.patch("/workers/{worker_id}/approve", dependencies=[Depends(verify_api_key)])
 async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
     try:
+        if body.approval_status not in ["approved", "rejected"]:
+            raise HTTPException(status_code=400, detail="approval_status must be 'approved' or 'rejected'")
+
         response = supabase.table("technicians").select("*").eq("uuid", worker_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Technician not found")
 
         technician = response.data[0]
+        is_approved_bool = body.approval_status == "approved"
 
-        supabase.table("technicians").update({"is_approved": body.is_approved}).eq("uuid", worker_id).execute()
+        supabase.table("technicians").update({
+            "approval_status": body.approval_status,
+            "is_approved": is_approved_bool
+        }).eq("uuid", worker_id).execute()
 
-        if body.is_approved:
+        if is_approved_bool:
             approval_email_html = f"""
             <h2>Application Approved</h2>
             <p>Hi {technician.get('full_name')},</p>
             <p>Congratulations! Your application to join Maynd Stomir has been approved. You're now eligible to receive job assignments.</p>
             """
-            send_email(
-                to_email=technician.get("email_address"),
-                subject="Your Application Has Been Approved",
-                html_content=approval_email_html
-            )
+            send_email(to_email=technician.get("email_address"), subject="Your Application Has Been Approved", html_content=approval_email_html)
         else:
             rejection_email_html = f"""
             <h2>Application Update</h2>
             <p>Hi {technician.get('full_name')},</p>
             <p>Thank you for your interest in joining Maynd Stomir. After reviewing your application, we're unable to move forward at this time.</p>
             """
-            send_email(
-                to_email=technician.get("email_address"),
-                subject="Update on Your Application",
-                html_content=rejection_email_html
-            )
+            send_email(to_email=technician.get("email_address"), subject="Update on Your Application", html_content=rejection_email_html)
 
-        return {"success": True, "message": f"Technician approval status set to {body.is_approved}"}
+        return {"success": True, "message": f"Technician approval status set to {body.approval_status}"}
 
     except HTTPException:
         raise
