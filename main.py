@@ -214,6 +214,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
             t for t in tech_response.data
             if normalized_category in [normalize_category(skill) for skill in (t.get("trade_skill") or [])]
             and t.get("is_approved") is True
+            and t.get("is_available") is not False
         ]
 
         available_technicians = []
@@ -246,6 +247,10 @@ async def create_job(request: Request, job: MaintenanceRequest):
                 "assigned_technician_id": assigned_id,
                 "status": "assigned"
             }).eq("uuid", job_id).execute()
+
+            supabase.table("technicians").update({
+                "is_available": False
+            }).eq("uuid", assigned_id).execute()
             job_data["assigned_technician"] = {
                 "name": assigned_name,
                 "phone": technician.get("phone_number")
@@ -380,8 +385,11 @@ async def get_all_technicians():
         return {"success": True, "data": technicians}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class CompleteJobRequest(BaseModel):
+    payout_amount: Optional[float] = None
+
 @app.patch("/jobs/{job_id}/complete", dependencies=[Depends(verify_api_key)])
-async def complete_job(job_id: int):
+async def complete_job(job_id: int, body: CompleteJobRequest = CompleteJobRequest()):
     try:
         response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
         if not response.data:
@@ -389,7 +397,10 @@ async def complete_job(job_id: int):
 
         job = response.data[0]
 
-        supabase.table("jobs").update({"status": "completed"}).eq("uuid", job_id).execute()
+        supabase.table("jobs").update({
+            "status": "completed",
+            "payout_amount": body.payout_amount
+        }).eq("uuid", job_id).execute()
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
@@ -400,19 +411,25 @@ async def complete_job(job_id: int):
                 current_assigned = technician.get("assigned_jobs_count") or 0
                 supabase.table("technicians").update({
                     "completed_jobs_count": current_completed + 1,
-                    "assigned_jobs_count": max(current_assigned - 1, 0)
+                    "assigned_jobs_count": max(current_assigned - 1, 0),
+                    "is_available": True
                 }).eq("uuid", technician_id).execute()
 
+                completion_timestamp = datetime.now(timezone.utc).strftime("%B %d, %Y at %I:%M %p")
+                payout_display = f"QAR {body.payout_amount:.2f}" if body.payout_amount is not None else "To be confirmed"
+
                 completion_email_html = f"""
-                <h2>Job Marked as Completed</h2>
-                <p><strong>Client:</strong> {job.get('customer_name')}</p>
-                <p><strong>Description:</strong> {job.get('description')}</p>
-                <p>This job has been marked as completed. Thank you for your work!</p>
+                <h2>Job Completed — Digital Receipt</h2>
+                <p><strong>Job Reference ID:</strong> #MS-{job_id}</p>
+                <p><strong>Trade Category:</strong> {get_display_category(job.get('category'))}</p>
+                <p><strong>Completion Timestamp:</strong> {completion_timestamp}</p>
+                <p><strong>Payout Amount:</strong> {payout_display}</p>
+                <p>Please retain this email for your financial records. Payouts are processed in our standard billing cycles.</p>
                 """
 
                 send_email(
                     to_email=technician.get("email_address"),
-                    subject="Job Completed",
+                    subject=f"Job Completed — Receipt #MS-{job_id}",
                     html_content=completion_email_html,
                     from_email="career@mayndstomir.com",
                     from_name="MSA Careers"
@@ -459,6 +476,10 @@ async def reassign_job(job_id: int, body: ReassignRequest):
             "assigned_technician_id": body.technician_id,
             "status": "assigned"
         }).eq("uuid", job_id).execute()
+
+        supabase.table("technicians").update({
+            "is_available": False
+        }).eq("uuid", body.technician_id).execute()
 
         maps_link = ""
         if job.get("client_lat") and job.get("client_lng"):
@@ -523,7 +544,8 @@ async def cancel_job(job_id: int):
             if tech_response.data:
                 current_assigned = tech_response.data[0].get("assigned_jobs_count") or 0
                 supabase.table("technicians").update({
-                    "assigned_jobs_count": max(current_assigned - 1, 0)
+                    "assigned_jobs_count": max(current_assigned - 1, 0),
+                    "is_available": True
                 }).eq("uuid", technician_id).execute()
 
         cancellation_email_html = f"""
@@ -574,13 +596,21 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
 
         if is_approved_bool:
             approval_email_html = f"""
-            <h2>Application Approved</h2>
             <p>Hi {technician.get('full_name')},</p>
-            <p>Congratulations! Your application to join Maynd Stomir has been approved. You're now eligible to receive job assignments.</p>
+            <p>Your application and credentials have been officially verified. Welcome to the Maynd Stomir network.</p>
+            <p>Your profile is now live, and you are fully eligible to receive building maintenance assignments across Doha.</p>
+            <h3>How Your Assignments Work</h3>
+            <p>We operate a fully automated, GPS-based dispatch system. To keep things seamless, you do not need to log into a dashboard or manually search for work.</p>
+            <p><strong>Automatic Matching:</strong> When a client request matches your verified trade skills and geographic location, you will receive an immediate email alert containing the full job details.</p>
+            <p><strong>Availability Management:</strong> Once you are assigned a job, our system automatically flags you as "busy" so you will not be double-booked. The moment the client's job is marked completed, you are instantly placed back into the available matching pool.</p>
+            <p><strong>Job History & Payments:</strong> For every completed assignment, you will receive an automated digital receipt to this email address detailing your exact payout amount. Please retain these emails as your official financial ledger.</p>
+            <p>If you ever need to update your contact details or have any operational questions, our partner support team is available at career@mayndstomir.com.</p>
+            <p>We are excited to have your expertise on board.</p>
+            <p>Best regards,<br>The Maynd Stomir Team</p>
             """
             send_email(
                 to_email=technician.get("email_address"),
-                subject="Your Application Has Been Approved",
+                subject="Welcome to Maynd Stomir — Your Partner Account is Active",
                 html_content=approval_email_html,
                 from_email="career@mayndstomir.com",
                 from_name="MSA Careers"
