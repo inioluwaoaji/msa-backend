@@ -85,7 +85,7 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
 
-def send_email(to_email: str, subject: str, html_content: str):
+def send_email(to_email: str, subject: str, html_content: str, from_email: str = "customerservice@mayndstomir.com", from_name: str = "MSA Dispatch"):
     if not RESEND_API_KEY:
         print("Resend API key not set — skipping email")
         try:
@@ -99,7 +99,7 @@ def send_email(to_email: str, subject: str, html_content: str):
         return
     try:
         resend.Emails.send({
-            "from": "MSA Dispatch <customerservice@mayndstomir.com>",
+            "from": f"{from_name} <{from_email}>",
             "to": to_email,
             "subject": subject,
             "html": html_content
@@ -272,7 +272,9 @@ async def create_job(request: Request, job: MaintenanceRequest):
             send_email(
                 to_email=technician.get("email_address"),
                 subject=f"New {job.category.upper()} Job - Action Needed",
-                html_content=email_html
+                html_content=email_html,
+                from_email="career@mayndstomir.com",
+                from_name="MSA Careers"
             )
 
         client_email_html = f"""
@@ -411,7 +413,9 @@ async def complete_job(job_id: int):
                 send_email(
                     to_email=technician.get("email_address"),
                     subject="Job Completed",
-                    html_content=completion_email_html
+                    html_content=completion_email_html,
+                    from_email="career@mayndstomir.com",
+                    from_name="MSA Careers"
                 )
 
         client_completion_email_html = f"""
@@ -470,9 +474,10 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         send_email(
             to_email=technician.get("email_address"),
             subject=f"Job Reassigned To You - Action Needed",
-            html_content=email_html
+            html_content=email_html,
+            from_email="career@mayndstomir.com",
+            from_name="MSA Careers"
         )
-
         return {"success": True, "message": f"Job {job_id} reassigned to {assigned_name}"}
 
     except HTTPException:
@@ -573,14 +578,26 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
             <p>Hi {technician.get('full_name')},</p>
             <p>Congratulations! Your application to join Maynd Stomir has been approved. You're now eligible to receive job assignments.</p>
             """
-            send_email(to_email=technician.get("email_address"), subject="Your Application Has Been Approved", html_content=approval_email_html)
+            send_email(
+                to_email=technician.get("email_address"),
+                subject="Your Application Has Been Approved",
+                html_content=approval_email_html,
+                from_email="career@mayndstomir.com",
+                from_name="MSA Careers"
+            )
         else:
             rejection_email_html = f"""
             <h2>Application Update</h2>
             <p>Hi {technician.get('full_name')},</p>
             <p>Thank you for your interest in joining Maynd Stomir. After reviewing your application, we're unable to move forward at this time.</p>
             """
-            send_email(to_email=technician.get("email_address"), subject="Update on Your Application", html_content=rejection_email_html)
+            send_email(
+                to_email=technician.get("email_address"),
+                subject="Update on Your Application",
+                html_content=rejection_email_html,
+                from_email="career@mayndstomir.com",
+                from_name="MSA Careers"
+            )
 
         return {"success": True, "message": f"Technician approval status set to {body.approval_status}"}
 
