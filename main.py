@@ -66,7 +66,8 @@ app.add_middleware(
     allow_origins=[
         "https://mayndstomir.com",
         "https://www.mayndstomir.com",
-        "https://maynd-stomir.vercel.app"
+        "https://maynd-stomir.vercel.app",
+        "null"
     ],
     allow_credentials=True,
     allow_methods=["*"],
