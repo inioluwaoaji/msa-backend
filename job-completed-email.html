@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Completion Digital Receipt</title>
+    <style>
+        
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100% !important;
+            background-color: #F8FAFC;
+            font-family: 'DM Sans', Arial, sans-serif;
+            color: #0F172A;
+            -webkit-font-smoothing: antialiased;
+        }
+
+       
+        .email-wrapper {
+            background-color: #F8FAFC;
+            padding: 20px 0;
+            width: 100%;
+        }
+
+        .main-canvas {
+            max-width: 600px;
+            background-color: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-collapse: collapse;
+            box-shadow: 0px 4px 6px rgba(15, 23, 42, 0.04);
+            width: 100%;
+        }
+
+        /* 3. Header Styling */
+        .header-section {
+            background-color: #0F172A;
+            padding: 30px 40px;
+            border-bottom: 3px solid #8B1A2B;
+        }
+
+        .header-table {
+            width: 100%;
+        }
+
+        .logo-title {
+            margin: 0;
+            font-family: 'Syne', Arial, sans-serif;
+            font-size: 20px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #FFFFFF;
+        }
+
+        .logo-accent {
+            color: #8B1A2B;
+        }
+
+        .status-badge {
+            background-color: #0369A1;
+            color: #FFFFFF;
+            font-family: 'Syne', Arial, sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 6px 12px;
+            letter-spacing: 0.5px;
+            border-radius: 2px;
+            display: inline-block;
+        }
+
+        /* 4. Main Body Text Areas */
+        .content-body {
+            padding: 40px 40px 20px 40px;
+        }
+
+        .section-heading {
+            margin: 0 0 16px 0;
+            font-family: 'Syne', Arial, sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            color: #0F172A;
+            line-height: 1.3;
+        }
+
+        .narrative-text {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.6;
+            color: #64748B;
+        }
+
+        /* 5. Financial Ledger Component */
+        .ledger-container {
+            padding: 0 40px 30px 40px;
+        }
+
+        .ledger-table {
+            background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        .ledger-label {
+            padding: 14px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            color: #64748B;
+            border-bottom: 1px solid #E2E8F0;
+            width: 40%;
+        }
+
+        .ledger-value {
+            padding: 14px 20px;
+            font-size: 14px;
+            color: #0F172A;
+            border-bottom: 1px solid #E2E8F0;
+            text-align: right;
+        }
+
+        .ledger-value-bold {
+            font-weight: 700;
+        }
+
+        .payout-row {
+            background-color: #FFFFFF;
+        }
+
+        .payout-label {
+            padding: 18px 20px;
+            font-family: 'Syne', Arial, sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            color: #8B1A2B;
+        }
+
+        .payout-value {
+            padding: 18px 20px;
+            font-family: 'Syne', Arial, sans-serif;
+            font-size: 18px;
+            font-weight: 800;
+            color: #8B1A2B;
+            text-align: right;
+        }
+
+        /* 6. Legal / Retention Callout Box */
+        .notice-container {
+            padding: 0 40px 40px 40px;
+            border-bottom: 1px solid #E2E8F0;
+        }
+
+        .notice-box {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #64748B;
+            background-color: #F8FAFC;
+            border-left: 3px solid #8B1A2B;
+            padding: 12px 16px;
+        }
+
+        /* 7. System Footer Frame */
+        .footer-section {
+            background-color: #F8FAFC;
+            padding: 24px 40px;
+            font-size: 11px;
+            color: #64748B;
+            line-height: 1.4;
+        }
+
+        .footer-text-spacing {
+            margin: 0 0 6px 0;
+        }
+
+        .footer-text-flat {
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <table role="presentation" cellpadding="0" cellspacing="0" class="email-wrapper">
+        <tr>
+            <td align="center">
+                
+                <!-- Main Email Canvas Box -->
+                <table role="presentation" cellpadding="0" cellspacing="0" class="main-canvas">
+                    
+                    <!-- 1. Header (Emrill Heavy-Duty Base Canvas) -->
+                    <tr>
+                        <td class="header-section">
+                            <table role="presentation" cellpadding="0" cellspacing="0" class="header-table">
+                                <tr>
+                                    <td>
+                                        <!-- Logo Signature -->
+                                        <h1 class="logo-title">
+                                            MAYND <span class="logo-accent">STOMIR</span>
+                                        </h1>
+                                    </td>
+                                    <td align="right">
+                                        <!-- Flat Badging Status Indicator -->
+                                        <span class="status-badge">
+                                            COMPLETED
+                                        </span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- 2. Main Narrative & Message -->
+                    <tr>
+                        <td class="content-body">
+                            <h2 class="section-heading">
+                                Job Work Verification
+                            </h2>
+                            <p class="narrative-text">
+                                Hello {{technician_name}}, <br><br>
+                                This is your official digital verification confirming that the service request assigned to your profile has been successfully finalized. The parameter records have updated across our ledger systems.
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- 3. Financial Ledger Frame & Breakdown -->
+                    <tr>
+                        <td class="ledger-container">
+                            <table role="presentation" cellpadding="0" cellspacing="0" class="ledger-table">
+                                
+                                <!-- Job ID Line -->
+                                <tr>
+                                    <td class="ledger-label">Job Reference ID</td>
+                                    <td class="ledger-value ledger-value-bold">{{job_id}}</td>
+                                </tr>
+                                
+                                <!-- Trade Category Line -->
+                                <tr>
+                                    <td class="ledger-label">Trade Category</td>
+                                    <td class="ledger-value">{{trade_category}}</td>
+                                </tr>
+                                
+                                <!-- Timestamp Line -->
+                                <tr>
+                                    <td class="ledger-label">Completion Time</td>
+                                    <td class="ledger-value">{{completion_timestamp}}</td>
+                                </tr>
+                                
+                                <!-- High Contrast Financial Ledger Payout Target (QAR) -->
+                                <tr class="payout-row">
+                                    <td class="payout-label">Payout Amount</td>
+                                    <td class="payout-value">{{payout_amount}} QAR</td>
+                                </tr>
+
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- 4. Mandatory Retention Notice / Sign-off Footer -->
+                    <tr>
+                        <td class="notice-container">
+                            <p class="notice-box">
+                                <strong>Record Retention Notice:</strong> Please retain this communication receipt for your direct corporate financial logs. Outstanding processing entries are compiled and disbursed within our standard partner billing cycles.
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- 5. System Footnotes -->
+                    <tr>
+                        <td align="center" class="footer-section">
+                            <p class="footer-text-spacing">This is an automated system operation receipt. Responses sent to this address are unmonitored.</p>
+                            <p class="footer-text-flat">&copy; 2026 MayndsTomir. All architectural platform distribution protocols secured.</p>
+                        </td>
+                    </tr>
+
+                </table>
+
+            </td>
+        </tr>
+    </table>
+
+</body>
+</html>

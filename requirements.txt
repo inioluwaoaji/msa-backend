@@ -5,3 +5,5 @@ httpx
 pydantic
 resend
 slowapi
+pytesseract
+Pillow

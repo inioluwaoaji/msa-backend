@@ -415,21 +415,29 @@ async def complete_job(job_id: int, body: CompleteJobRequest = CompleteJobReques
                     "is_available": True
                 }).eq("uuid", technician_id).execute()
 
-                completion_timestamp = datetime.now(timezone.utc).strftime("%B %d, %Y at %I:%M %p")
-                payout_display = f"QAR {body.payout_amount:.2f}" if body.payout_amount is not None else "To be confirmed"
+                formatted_job_id = f"#MS-{str(job_id).zfill(4)}"
+                completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
+                payout_display = "Pending"
 
-                completion_email_html = f"""
-                <h2>Job Completed — Digital Receipt</h2>
-                <p><strong>Job Reference ID:</strong> #MS-{job_id}</p>
-                <p><strong>Trade Category:</strong> {get_display_category(job.get('category'))}</p>
-                <p><strong>Completion Timestamp:</strong> {completion_timestamp}</p>
-                <p><strong>Payout Amount:</strong> {payout_display}</p>
-                <p>Please retain this email for your financial records. Payouts are processed in our standard billing cycles.</p>
-                """
+                try:
+                    with open("job-completed-email.html", "r", encoding="utf-8") as file:
+                        completion_email_html = file.read()
+
+                    completion_email_html = completion_email_html \
+                        .replace("{{technician_name}}", technician.get("full_name") or "Partner") \
+                        .replace("{{job_id}}", formatted_job_id) \
+                        .replace("{{trade_category}}", get_display_category(job.get("category"))) \
+                        .replace("{{completion_timestamp}}", completion_timestamp) \
+                        .replace("{{payout_amount}}", payout_display)
+                except FileNotFoundError:
+                    completion_email_html = f"""
+                    <h2>Job Completed</h2>
+                    <p>Job {formatted_job_id} has been marked as completed. Payout: {payout_display}.</p>
+                    """
 
                 send_email(
                     to_email=technician.get("email_address"),
-                    subject=f"Job Completed — Receipt #MS-{job_id}",
+                    subject=f"Job Completed — Receipt {formatted_job_id}",
                     html_content=completion_email_html,
                     from_email="career@mayndstomir.com",
                     from_name="MSA Careers"
