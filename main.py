@@ -208,6 +208,9 @@ async def create_job(request: Request, job: MaintenanceRequest):
         job_data = response.data[0]
         job_id = job_data["uuid"]
 
+        tracking_token = job_data.get("tracking_token")
+        tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
+
         normalized_category = normalize_category(job.category)
         tech_response = supabase.table("technicians").select("*").execute()
         tech_response.data = [
@@ -298,17 +301,18 @@ async def create_job(request: Request, job: MaintenanceRequest):
 
         job_data["id"] = job_data.pop("uuid")
 
-        tracking_token = job_data.get("tracking_token")
-        tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
-
         return {"success": True, "data": [job_data]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
-async def get_job(job_id: str):
-    try:
-        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+async def get_job(job_id: str)
+            try:
+        if job_id.isdigit():
+            response = supabase.table("jobs").select("*").eq("uuid", int(job_id)).execute()
+        else:
+            response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
         job_data = response.data[0]
@@ -531,7 +535,11 @@ async def get_email_failures():
 @app.patch("/jobs/{job_id}/cancel", dependencies=[Depends(verify_api_key)])
 async def cancel_job(job_id: str):
     try:
-        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if job_id.isdigit():
+            response = supabase.table("jobs").select("*").eq("uuid", int(job_id)).execute()
+        else:
+            response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
 
