@@ -307,7 +307,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
 async def get_job(job_id: str):
-            try:
+    try:
         if job_id.isdigit():
             response = supabase.table("jobs").select("*").eq("uuid", int(job_id)).execute()
         else:
