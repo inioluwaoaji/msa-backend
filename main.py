@@ -309,9 +309,9 @@ async def create_job(request: Request, job: MaintenanceRequest):
 async def get_job(job_id: str):
     try:
         if job_id.isdigit():
-            response = supabase.table("jobs").select("*").eq("uuid", int(job_id)).execute()
-        else:
-            response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+            raise HTTPException(status_code=400, detail="Numeric job IDs are not accepted. Use the tracking token instead.")
+
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
