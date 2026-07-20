@@ -287,6 +287,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         <p>Hi {job.full_name},</p>
         <p>Your maintenance request for <strong>{job.category}</strong> has been assigned to a technician who will contact you shortly.</p>
         <p><strong>Description:</strong> {job.description}</p>
+        {'<p><a href="' + tracking_url + '">Track your request status here</a></p>' if tracking_url else ''}
         """
 
         send_email(
@@ -296,14 +297,18 @@ async def create_job(request: Request, job: MaintenanceRequest):
         )
 
         job_data["id"] = job_data.pop("uuid")
+
+        tracking_token = job_data.get("tracking_token")
+        tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
+
         return {"success": True, "data": [job_data]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
-async def get_job(job_id: int):
+async def get_job(job_id: str):
     try:
-        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
         job_data = response.data[0]
