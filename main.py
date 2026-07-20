@@ -394,18 +394,19 @@ class CompleteJobRequest(BaseModel):
     payout_amount: Optional[float] = None
 
 @app.patch("/jobs/{job_id}/complete", dependencies=[Depends(verify_api_key)])
-async def complete_job(job_id: int, body: CompleteJobRequest = CompleteJobRequest()):
+async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobRequest()):
     try:
-        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
 
         job = response.data[0]
+        internal_job_id = job.get("uuid")
 
         supabase.table("jobs").update({
             "status": "completed",
             "payout_amount": body.payout_amount
-        }).eq("uuid", job_id).execute()
+        }).eq("uuid", internal_job_id).execute()
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
@@ -420,7 +421,7 @@ async def complete_job(job_id: int, body: CompleteJobRequest = CompleteJobReques
                     "is_available": True
                 }).eq("uuid", technician_id).execute()
 
-                formatted_job_id = f"#MS-{str(job_id).zfill(4)}"
+                formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
                 completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
                 payout_display = "Pending"
 
@@ -528,13 +529,14 @@ async def get_email_failures():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/jobs/{job_id}/cancel", dependencies=[Depends(verify_api_key)])
-async def cancel_job(job_id: int):
+async def cancel_job(job_id: str):
     try:
-        response = supabase.table("jobs").select("*").eq("uuid", job_id).execute()
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
 
         job = response.data[0]
+        internal_job_id = job.get("uuid")
 
         if job.get("status") == "completed":
             raise HTTPException(status_code=400, detail="Cannot cancel a completed job")
@@ -549,7 +551,7 @@ async def cancel_job(job_id: int):
         if hours_passed > 2:
             raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
 
-        supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", job_id).execute()
+        supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", internal_job_id).execute()
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
