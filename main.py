@@ -51,6 +51,38 @@ def normalize_category(value: str) -> str:
     cleaned = value.strip().lower()
     return CATEGORY_SYNONYMS.get(cleaned, cleaned)
 from fastapi import Request
+def find_available_technician(category: str, client_lat: Optional[float], client_lng: Optional[float], exclude_technician_id: Optional[int] = None):
+    normalized_category = normalize_category(category)
+    tech_response = supabase.table("technicians").select("*").execute()
+    tech_response.data = [
+        t for t in tech_response.data
+        if normalized_category in [normalize_category(skill) for skill in (t.get("trade_skill") or [])]
+        and t.get("is_approved") is True
+        and t.get("is_available") is not False
+        and t.get("uuid") != exclude_technician_id
+    ]
+
+    available_technicians = []
+    for candidate in tech_response.data:
+        candidate_id = candidate.get("uuid")
+        active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).eq("status", "assigned").execute()
+        if not active_jobs.data:
+            available_technicians.append(candidate)
+
+    technician = None
+    if available_technicians and client_lat and client_lng:
+        technicians_with_location = [t for t in available_technicians if t.get("tech_lat") and t.get("tech_lng")]
+        if technicians_with_location:
+            technician = min(
+                technicians_with_location,
+                key=lambda t: calculate_distance(client_lat, client_lng, t.get("tech_lat"), t.get("tech_lng"))
+            )
+        else:
+            technician = available_technicians[0]
+    elif available_technicians:
+        technician = available_technicians[0]
+
+    return technician
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -211,35 +243,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         tracking_token = job_data.get("tracking_token")
         tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
 
-        normalized_category = normalize_category(job.category)
-        tech_response = supabase.table("technicians").select("*").execute()
-        tech_response.data = [
-            t for t in tech_response.data
-            if normalized_category in [normalize_category(skill) for skill in (t.get("trade_skill") or [])]
-            and t.get("is_approved") is True
-            and t.get("is_available") is not False
-        ]
-
-        available_technicians = []
-        if tech_response.data:
-            for candidate in tech_response.data:
-                candidate_id = candidate.get("uuid")
-                active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).eq("status", "assigned").execute()
-                if not active_jobs.data:
-                    available_technicians.append(candidate)
-
-        technician = None
-        if available_technicians and job.client_lat and job.client_lng:
-            technicians_with_location = [t for t in available_technicians if t.get("tech_lat") and t.get("tech_lng")]
-            if technicians_with_location:
-                technician = min(
-                    technicians_with_location,
-                    key=lambda t: calculate_distance(job.client_lat, job.client_lng, t.get("tech_lat"), t.get("tech_lng"))
-                )
-            else:
-                technician = available_technicians[0]
-        elif available_technicians:
-            technician = available_technicians[0]
+        technician = find_available_technician(job.category, job.client_lat, job.client_lng)
 
         if technician:
             assigned_name = technician.get("full_name")
@@ -414,7 +418,7 @@ async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobReques
 
         technician_id = job.get("assigned_technician_id")
         if technician_id:
-            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count, email_address, full_name").eq("uuid", technician_id).execute()
+            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count, email_address, full_name, is_approved").eq("uuid", technician_id).execute()
             if tech_response.data:
                 technician = tech_response.data[0]
                 current_completed = technician.get("completed_jobs_count") or 0
@@ -425,33 +429,36 @@ async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobReques
                     "is_available": True
                 }).eq("uuid", technician_id).execute()
 
-                formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
-                completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
-                payout_display = "Pending"
+                if technician.get("is_approved") is True:
+                    formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
+                    completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
+                    payout_display = "Pending"
 
-                try:
-                    with open("job-completed-email.html", "r", encoding="utf-8") as file:
-                        completion_email_html = file.read()
+                    try:
+                        with open("job-completed-email.html", "r", encoding="utf-8") as file:
+                            completion_email_html = file.read()
 
-                    completion_email_html = completion_email_html \
-                        .replace("{{technician_name}}", technician.get("full_name") or "Partner") \
-                        .replace("{{job_id}}", formatted_job_id) \
-                        .replace("{{trade_category}}", get_display_category(job.get("category"))) \
-                        .replace("{{completion_timestamp}}", completion_timestamp) \
-                        .replace("{{payout_amount}}", payout_display)
-                except FileNotFoundError:
-                    completion_email_html = f"""
-                    <h2>Job Completed</h2>
-                    <p>Job {formatted_job_id} has been marked as completed. Payout: {payout_display}.</p>
-                    """
+                        completion_email_html = completion_email_html \
+                            .replace("{{technician_name}}", technician.get("full_name") or "Partner") \
+                            .replace("{{job_id}}", formatted_job_id) \
+                            .replace("{{trade_category}}", get_display_category(job.get("category"))) \
+                            .replace("{{completion_timestamp}}", completion_timestamp) \
+                            .replace("{{payout_amount}}", payout_display)
+                    except FileNotFoundError:
+                        completion_email_html = f"""
+                        <h2>Job Completed</h2>
+                        <p>Job {formatted_job_id} has been marked as completed. Payout: {payout_display}.</p>
+                        """
 
-                send_email(
-                    to_email=technician.get("email_address"),
-                    subject=f"Job Completed — Receipt {formatted_job_id}",
-                    html_content=completion_email_html,
-                    from_email="career@mayndstomir.com",
-                    from_name="MSA Careers"
-                )
+                    send_email(
+                        to_email=technician.get("email_address"),
+                        subject=f"Job Completed — Receipt {formatted_job_id}",
+                        html_content=completion_email_html,
+                        from_email="career@mayndstomir.com",
+                        from_name="MSA Careers"
+                    )
+                else:
+                    print(f"Skipped completion receipt — technician {technician_id} is not approved (approval revoked after assignment)")
 
         client_completion_email_html = f"""
         <h2>Your Request Has Been Completed</h2>
@@ -639,6 +646,82 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
                 from_name="MSA Careers"
             )
         else:
+            orphaned_jobs = supabase.table("jobs").select("*").eq("assigned_technician_id", worker_id).eq("status", "assigned").execute()
+
+            still_unassigned = []
+            if orphaned_jobs.data:
+                for orphaned_job in orphaned_jobs.data:
+                    replacement = find_available_technician(
+                        orphaned_job.get("category"),
+                        orphaned_job.get("client_lat"),
+                        orphaned_job.get("client_lng"),
+                        exclude_technician_id=worker_id
+                    )
+
+                    if replacement:
+                        replacement_id = replacement.get("uuid")
+
+                        supabase.table("jobs").update({
+                            "assigned_technician": replacement.get("full_name"),
+                            "assigned_technician_id": replacement_id,
+                            "status": "assigned"
+                        }).eq("uuid", orphaned_job["uuid"]).execute()
+
+                        supabase.table("technicians").update({
+                            "is_available": False
+                        }).eq("uuid", replacement_id).execute()
+
+                        current_assigned = replacement.get("assigned_jobs_count") or 0
+                        supabase.table("technicians").update({
+                            "assigned_jobs_count": current_assigned + 1
+                        }).eq("uuid", replacement_id).execute()
+
+                        maps_link = ""
+                        if orphaned_job.get("client_lat") and orphaned_job.get("client_lng"):
+                            maps_link = f"https://www.google.com/maps?q={orphaned_job['client_lat']},{orphaned_job['client_lng']}"
+
+                        reassign_email_html = f"""
+                        <h2>New {get_display_category(orphaned_job.get('category')).upper()} Job Assigned</h2>
+                        <p><strong>Problem:</strong> {orphaned_job.get('description')}</p>
+                        <p><strong>Client Phone:</strong> {orphaned_job.get('phone_number')}</p>
+                        {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+                        """
+                        send_email(
+                            to_email=replacement.get("email_address"),
+                            subject=f"New {get_display_category(orphaned_job.get('category')).upper()} Job - Action Needed",
+                            html_content=reassign_email_html,
+                            from_email="career@mayndstomir.com",
+                            from_name="MSA Careers"
+                        )
+                    else:
+                        supabase.table("jobs").update({
+                            "assigned_technician": None,
+                            "assigned_technician_id": None,
+                            "status": "pending"
+                        }).eq("uuid", orphaned_job["uuid"]).execute()
+                        still_unassigned.append(orphaned_job)
+
+                supabase.table("technicians").update({
+                    "assigned_jobs_count": 0
+                }).eq("uuid", worker_id).execute()
+
+                if still_unassigned:
+                    orphaned_list_html = "".join(
+                        f"<li>Job #MS-{str(j['uuid']).zfill(4)} — {get_display_category(j.get('category'))} — {j.get('customer_name')}</li>"
+                        for j in still_unassigned
+                    )
+                    admin_alert_html = f"""
+                    <h2>Technician Rejected — No Replacement Found</h2>
+                    <p>{technician.get('full_name')} was rejected. {len(still_unassigned)} job(s) could not be auto-rematched to another technician and have been set back to pending:</p>
+                    <ul>{orphaned_list_html}</ul>
+                    <p>Please reassign manually.</p>
+                    """
+                    send_email(
+                        to_email="customerservice@mayndstomir.com",
+                        subject="Action Needed: Jobs Could Not Be Auto-Reassigned",
+                        html_content=admin_alert_html
+                    )
+
             rejection_email_html = f"""
             <h2>Application Update</h2>
             <p>Hi {technician.get('full_name')},</p>
