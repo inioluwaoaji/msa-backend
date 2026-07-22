@@ -69,20 +69,24 @@ def find_available_technician(category: str, client_lat: Optional[float], client
         if not active_jobs.data:
             available_technicians.append(candidate)
 
-    technician = None
-    if available_technicians and client_lat and client_lng:
+    if client_lat and client_lng:
         technicians_with_location = [t for t in available_technicians if t.get("tech_lat") and t.get("tech_lng")]
         if technicians_with_location:
-            technician = min(
+            available_technicians = sorted(
                 technicians_with_location,
                 key=lambda t: calculate_distance(client_lat, client_lng, t.get("tech_lat"), t.get("tech_lng"))
             )
-        else:
-            technician = available_technicians[0]
-    elif available_technicians:
-        technician = available_technicians[0]
 
-    return technician
+    for candidate in available_technicians:
+        candidate_id = candidate.get("uuid")
+        claim_result = supabase.table("technicians").update({
+            "is_available": False
+        }).eq("uuid", candidate_id).eq("is_available", True).execute()
+
+        if claim_result.data:
+            return candidate
+
+    return None
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -255,9 +259,6 @@ async def create_job(request: Request, job: MaintenanceRequest):
                 "status": "assigned"
             }).eq("uuid", job_id).execute()
 
-            supabase.table("technicians").update({
-                "is_available": False
-            }).eq("uuid", assigned_id).execute()
             job_data["assigned_technician"] = {
                 "name": assigned_name,
                 "phone": technician.get("phone_number")
@@ -495,6 +496,7 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         job = job_response.data[0]
         technician = tech_response.data[0]
         assigned_name = technician.get("full_name")
+        previous_technician_id = job.get("assigned_technician_id")
 
         supabase.table("jobs").update({
             "assigned_technician": assigned_name,
@@ -505,6 +507,18 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         supabase.table("technicians").update({
             "is_available": False
         }).eq("uuid", body.technician_id).execute()
+
+        if previous_technician_id and previous_technician_id != body.technician_id:
+            supabase.table("technicians").update({
+                "is_available": True
+            }).eq("uuid", previous_technician_id).execute()
+
+            prev_assigned = supabase.table("technicians").select("assigned_jobs_count").eq("uuid", previous_technician_id).execute()
+            if prev_assigned.data:
+                current_prev = prev_assigned.data[0].get("assigned_jobs_count") or 0
+                supabase.table("technicians").update({
+                    "assigned_jobs_count": max(current_prev - 1, 0)
+                }).eq("uuid", previous_technician_id).execute()
 
         maps_link = ""
         if job.get("client_lat") and job.get("client_lng"):
@@ -666,10 +680,6 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
                             "assigned_technician_id": replacement_id,
                             "status": "assigned"
                         }).eq("uuid", orphaned_job["uuid"]).execute()
-
-                        supabase.table("technicians").update({
-                            "is_available": False
-                        }).eq("uuid", replacement_id).execute()
 
                         current_assigned = replacement.get("assigned_jobs_count") or 0
                         supabase.table("technicians").update({
