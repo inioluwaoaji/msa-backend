@@ -238,6 +238,13 @@ async def create_job(request: Request, job: MaintenanceRequest):
             "street_number": job.street_number,
             "building_number": job.building_number,
             "description": job.description,
+            "email": job.email,
+            "photo_url": job.job_photo_url,
+            "customer_availability": combined_datetime,
+            "status": "pending",
+            "client_lat": job.client_lat,
+            "client_lng": job.client_lng
+        }
             
 
         response = supabase.table("jobs").insert(data).execute()
