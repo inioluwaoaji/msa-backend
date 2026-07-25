@@ -213,6 +213,9 @@ class MaintenanceRequest(BaseModel):
     full_name: str
     phone_number: str
     category: str
+    zone_number: Optional[str] = None
+    street_number: Optional[str] = None
+    building_number: Optional[str] = None
     client_lat: Optional[float] = None
     client_lng: Optional[float] = None
     description: str
@@ -231,14 +234,11 @@ async def create_job(request: Request, job: MaintenanceRequest):
             "customer_name": job.full_name,
             "phone_number": job.phone_number,
             "category": job.category,
+            "zone_number": job.zone_number,
+            "street_number": job.street_number,
+            "building_number": job.building_number,
             "description": job.description,
-            "email": job.email,
-            "photo_url": job.job_photo_url,
-            "customer_availability": combined_datetime,
-            "status": "pending",
-            "client_lat": job.client_lat,
-            "client_lng": job.client_lng
-        }
+            
 
         response = supabase.table("jobs").insert(data).execute()
         job_data = response.data[0]
