@@ -242,7 +242,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
             "email": job.email,
             "photo_url": job.job_photo_url,
             "customer_availability": combined_datetime,
-            "status": "pending",
+            "status": "pending_dispatch",
             "client_lat": job.client_lat,
             "client_lng": job.client_lng
         }
@@ -552,7 +552,116 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.patch("/jobs/{job_id}/accept", dependencies=[Depends(verify_api_key)])
+async def accept_job(job_id: str):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
 
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+
+        if job.get("status") != "dispatched":
+            raise HTTPException(status_code=400, detail=f"Job cannot be accepted from status '{job.get('status')}'")
+
+        supabase.table("jobs").update({
+            "status": "in_diagnostics"
+        }).eq("uuid", internal_job_id).execute()
+
+        return {"success": True, "message": "Job accepted", "status": "in_diagnostics"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/jobs/{job_id}/decline", dependencies=[Depends(verify_api_key)])
+async def decline_job(job_id: str):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+        declining_technician_id = job.get("assigned_technician_id")
+
+        if job.get("status") != "dispatched":
+            raise HTTPException(status_code=400, detail=f"Job cannot be declined from status '{job.get('status')}'")
+
+        if declining_technician_id:
+            supabase.table("technician_rejections").insert({
+                "technician_id": declining_technician_id,
+                "job_id": internal_job_id
+            }).execute()
+
+            supabase.table("technicians").update({
+                "is_available": True
+            }).eq("uuid", declining_technician_id).execute()
+
+            job_tech_count = supabase.table("technicians").select("assigned_jobs_count").eq("uuid", declining_technician_id).execute()
+            if job_tech_count.data:
+                current_assigned = job_tech_count.data[0].get("assigned_jobs_count") or 0
+                supabase.table("technicians").update({
+                    "assigned_jobs_count": max(current_assigned - 1, 0)
+                }).eq("uuid", declining_technician_id).execute()
+
+        replacement = find_available_technician(
+            job.get("category"),
+            job.get("client_lat"),
+            job.get("client_lng"),
+            exclude_technician_id=declining_technician_id
+        )
+
+        if replacement:
+            replacement_id = replacement.get("uuid")
+
+            supabase.table("jobs").update({
+                "assigned_technician": replacement.get("full_name"),
+                "assigned_technician_id": replacement_id,
+                "status": "dispatched"
+            }).eq("uuid", internal_job_id).execute()
+
+            current_replacement_assigned = replacement.get("assigned_jobs_count") or 0
+            supabase.table("technicians").update({
+                "assigned_jobs_count": current_replacement_assigned + 1
+            }).eq("uuid", replacement_id).execute()
+
+            maps_link = ""
+            if job.get("client_lat") and job.get("client_lng"):
+                maps_link = f"https://www.google.com/maps?q={job['client_lat']},{job['client_lng']}"
+
+            email_html = f"""
+            <h2>New {get_display_category(job.get('category')).upper()} Job Assigned</h2>
+            <p><strong>Problem:</strong> {job.get('description')}</p>
+            <p><strong>Client Phone:</strong> {job.get('phone_number')}</p>
+            {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+            """
+
+            send_email(
+                to_email=replacement.get("email_address"),
+                subject=f"New {get_display_category(job.get('category')).upper()} Job - Action Needed",
+                html_content=email_html,
+                from_email="career@mayndstomir.com",
+                from_name="MSA Careers"
+            )
+
+            return {"success": True, "message": "Job declined and re-dispatched", "status": "dispatched"}
+        else:
+            supabase.table("jobs").update({
+                "assigned_technician": None,
+                "assigned_technician_id": None,
+                "status": "pending_dispatch"
+            }).eq("uuid", internal_job_id).execute()
+
+            return {"success": True, "message": "Job declined; no replacement available, queued", "status": "pending_dispatch"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 @app.get("/email_failures", dependencies=[Depends(verify_api_key)])
 async def get_email_failures():
     try:
@@ -716,7 +825,7 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
                         supabase.table("jobs").update({
                             "assigned_technician": None,
                             "assigned_technician_id": None,
-                            "status": "pending"
+                            "status": "pending_dispatch"
                         }).eq("uuid", orphaned_job["uuid"]).execute()
                         still_unassigned.append(orphaned_job)
 
