@@ -40,6 +40,7 @@ CATEGORY_DISPLAY_NAMES = {
     "locks_security": "Locks & Security",
     "other": "Other"
 }
+ACTIVE_JOB_STATUSES = ["dispatched", "in_diagnostics", "awaiting_payment", "paid"]
 
 def get_display_category(raw_value):
     if not raw_value:
@@ -65,7 +66,7 @@ def find_available_technician(category: str, client_lat: Optional[float], client
     available_technicians = []
     for candidate in tech_response.data:
         candidate_id = candidate.get("uuid")
-        active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).eq("status", "assigned").execute()
+        active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).in_("status", ACTIVE_JOB_STATUSES).execute()
         if not active_jobs.data:
             available_technicians.append(candidate)
 
@@ -263,7 +264,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
             supabase.table("jobs").update({
                 "assigned_technician": assigned_name,
                 "assigned_technician_id": assigned_id,
-                "status": "assigned"
+                "status": "dispatched"
             }).eq("uuid", job_id).execute()
 
             job_data["assigned_technician"] = {
@@ -271,7 +272,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
                 "phone": technician.get("phone_number")
             }
             job_data["assigned_technician_id"] = assigned_id
-            job_data["status"] = "assigned"
+            job_data["status"] = "dispatched"
 
             current_assigned = technician.get("assigned_jobs_count") or 0
             supabase.table("technicians").update({
@@ -395,7 +396,7 @@ async def get_all_technicians():
             elif approval == "rejected":
                 tech["status"] = "rejected"
             else:
-                active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).eq("status", "assigned").execute()
+                active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", tech_id).in_("status", ACTIVE_JOB_STATUSES).execute()
                 tech["status"] = "assigned" if active_jobs.data else "available"
 
             tech["approval_status"] = approval
@@ -508,7 +509,7 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         supabase.table("jobs").update({
             "assigned_technician": assigned_name,
             "assigned_technician_id": body.technician_id,
-            "status": "assigned"
+            "status": "dispatched"
         }).eq("uuid", job_id).execute()
 
         supabase.table("technicians").update({
@@ -667,7 +668,7 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
                 from_name="MSA Careers"
             )
         else:
-            orphaned_jobs = supabase.table("jobs").select("*").eq("assigned_technician_id", worker_id).eq("status", "assigned").execute()
+            orphaned_jobs = supabase.table("jobs").select("*").eq("assigned_technician_id", worker_id).in_("status", ACTIVE_JOB_STATUSES).execute()
 
             still_unassigned = []
             if orphaned_jobs.data:
@@ -685,8 +686,9 @@ async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
                         supabase.table("jobs").update({
                             "assigned_technician": replacement.get("full_name"),
                             "assigned_technician_id": replacement_id,
-                            "status": "assigned"
+                            "status": "dispatched"
                         }).eq("uuid", orphaned_job["uuid"]).execute()
+                    
 
                         current_assigned = replacement.get("assigned_jobs_count") or 0
                         supabase.table("technicians").update({
