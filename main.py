@@ -6,7 +6,7 @@ from typing import Optional, List
 from supabase import create_client, Client
 import resend 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 def calculate_distance(lat1, lng1, lat2, lng2):
     R = 6371
@@ -63,12 +63,20 @@ def find_available_technician(category: str, client_lat: Optional[float], client
         and t.get("uuid") != exclude_technician_id
     ]
 
+    cooldown_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
     available_technicians = []
     for candidate in tech_response.data:
         candidate_id = candidate.get("uuid")
         active_jobs = supabase.table("jobs").select("uuid").eq("assigned_technician_id", candidate_id).in_("status", ACTIVE_JOB_STATUSES).execute()
-        if not active_jobs.data:
-            available_technicians.append(candidate)
+        if active_jobs.data:
+            continue
+
+        recent_rejections = supabase.table("technician_rejections").select("id").eq("technician_id", candidate_id).gte("created_at", cooldown_cutoff).execute()
+        if recent_rejections.data and len(recent_rejections.data) >= 3:
+            continue
+
+        available_technicians.append(candidate)
 
     if client_lat and client_lng:
         technicians_with_location = [t for t in available_technicians if t.get("tech_lat") and t.get("tech_lng")]
@@ -88,6 +96,10 @@ def find_available_technician(category: str, client_lat: Optional[float], client
             return candidate
 
     return None
+def generate_payment_link(job_id: int, amount: float, tracking_token: str) -> str:
+    # TODO: replace with a real Sadad/SkipCash API call once the merchant account and credentials exist.
+    # For now this returns a placeholder so the rest of the flow can be built and tested.
+    return f"https://www.mayndstomir.com/pay-placeholder?job={job_id}&amount={amount}"  
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -490,6 +502,12 @@ async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobReques
 class ReassignRequest(BaseModel):
     technician_id: int
 
+class QuoteRequest(BaseModel):
+    parts_cost: Optional[float] = 0
+    sourcing_fee: Optional[float] = 0
+    labor_cost: Optional[float] = 0
+    notes: Optional[str] = None
+
 @app.patch("/jobs/{job_id}/reassign", dependencies=[Depends(verify_api_key)])
 async def reassign_job(job_id: int, body: ReassignRequest):
     try:
@@ -577,7 +595,7 @@ async def accept_job(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.patch("/jobs/{job_id}/decline", dependencies=[Depends(verify_api_key)])
+@app.patch("/jobs/{job_id}/reject", dependencies=[Depends(verify_api_key)])
 async def decline_job(job_id: str):
     try:
         response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
@@ -657,6 +675,57 @@ async def decline_job(job_id: str):
             }).eq("uuid", internal_job_id).execute()
 
             return {"success": True, "message": "Job declined; no replacement available, queued", "status": "pending_dispatch"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+CALL_OUT_FEE = 50
+
+@app.post("/jobs/{job_id}/quotes", dependencies=[Depends(verify_api_key)])
+async def submit_quote(job_id: str, body: QuoteRequest):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+
+        if job.get("status") != "in_diagnostics":
+            raise HTTPException(status_code=400, detail=f"Quote cannot be submitted from status '{job.get('status')}'")
+
+        total_amount = CALL_OUT_FEE + (body.parts_cost or 0) + (body.sourcing_fee or 0) + (body.labor_cost or 0)
+
+        payment_url = generate_payment_link(job_id=internal_job_id, amount=total_amount, tracking_token=job.get("tracking_token"))
+
+        supabase.table("jobs").update({
+            "parts_cost": body.parts_cost,
+            "sourcing_fee": body.sourcing_fee,
+            "labor_cost": body.labor_cost,
+            "quote_notes": body.notes,
+            "total_amount": total_amount,
+            "payment_url": payment_url,
+            "status": "awaiting_payment"
+        }).eq("uuid", internal_job_id).execute()
+
+        invoice_url = f"https://www.mayndstomir.com/invoice?id={job.get('tracking_token')}"
+
+        client_email_html = f"""
+        <h2>Your Repair Quote Is Ready</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Total amount due: QAR {total_amount:.2f}</p>
+        <p><a href="{invoice_url}">View Invoice & Pay Now</a></p>
+        """
+
+        send_email(
+            to_email=job.get("email"),
+            subject="Your Invoice Is Ready — Payment Required",
+            html_content=client_email_html
+        )
+
+        return {"success": True, "message": "Quote submitted", "total_amount": total_amount, "payment_url": payment_url}
 
     except HTTPException:
         raise
