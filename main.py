@@ -419,12 +419,132 @@ async def get_all_technicians():
         return {"success": True, "data": technicians}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+def finalize_job_completion(job: dict, internal_job_id: int):
+    technician_id = job.get("assigned_technician_id")
+    formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
+    completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
+    payout_amount = job.get("total_amount")
+
+    if technician_id:
+        tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count, email_address, full_name, is_approved, trade_skill, tech_lat, tech_lng").eq("uuid", technician_id).execute()
+        if tech_response.data:
+            technician = tech_response.data[0]
+            current_completed = technician.get("completed_jobs_count") or 0
+            current_assigned = technician.get("assigned_jobs_count") or 0
+            supabase.table("technicians").update({
+                "completed_jobs_count": current_completed + 1,
+                "assigned_jobs_count": max(current_assigned - 1, 0),
+                "is_available": True
+            }).eq("uuid", technician_id).execute()
+
+            if payout_amount:
+                supabase.table("partner_payouts").insert({
+                    "technician_id": technician_id,
+                    "job_id": internal_job_id,
+                    "amount": payout_amount
+                }).execute()
+
+            if technician.get("is_approved") is True:
+                payout_display = f"{payout_amount:.2f}" if payout_amount else "Pending"
+
+                try:
+                    with open("job-completed-email.html", "r", encoding="utf-8") as file:
+                        completion_email_html = file.read()
+
+                    completion_email_html = completion_email_html \
+                        .replace("{{technician_name}}", technician.get("full_name") or "Partner") \
+                        .replace("{{job_id}}", formatted_job_id) \
+                        .replace("{{trade_category}}", get_display_category(job.get("category"))) \
+                        .replace("{{completion_timestamp}}", completion_timestamp) \
+                        .replace("{{payout_amount}}", payout_display)
+                except FileNotFoundError:
+                    completion_email_html = f"""
+                    <h2>Job Completed</h2>
+                    <p>Job {formatted_job_id} has been marked as completed. Payout: {payout_display}.</p>
+                    """
+
+                send_email(
+                    to_email=technician.get("email_address"),
+                    subject=f"Job Completed — Receipt {formatted_job_id}",
+                    html_content=completion_email_html,
+                    from_email="career@mayndstomir.com",
+                    from_name="MSA Careers"
+                )
+
+            assign_queued_job_to_technician(technician_id, technician)
+
+    client_completion_email_html = f"""
+    <h2>Your Request Has Been Completed</h2>
+    <p>Hi {job.get('customer_name')},</p>
+    <p>Your maintenance request for <strong>{job.get('category')}</strong> has been marked as completed. Thank you for using Maynd Stomir!</p>
+    """
+
+    send_email(
+        to_email=job.get("email"),
+        subject="Your Maintenance Request Has Been Completed",
+        html_content=client_completion_email_html
+    )
+
+
+def assign_queued_job_to_technician(technician_id: int, technician: dict):
+    matching_queued = supabase.table("jobs").select("*").eq("status", "pending_dispatch").execute()
+    candidates = [
+        j for j in matching_queued.data
+        if normalize_category(j.get("category")) in [normalize_category(skill) for skill in (technician.get("trade_skill") or [])]
+    ]
+    if not candidates:
+        return
+
+    oldest_queued = sorted(candidates, key=lambda j: j.get("created_at"))[0]
+    queued_job_id = oldest_queued.get("uuid")
+
+    claim_result = supabase.table("technicians").update({
+        "is_available": False
+    }).eq("uuid", technician_id).eq("is_available", True).execute()
+
+    if not claim_result.data:
+        return
+
+    supabase.table("jobs").update({
+        "assigned_technician": technician.get("full_name"),
+        "assigned_technician_id": technician_id,
+        "status": "dispatched"
+    }).eq("uuid", queued_job_id).execute()
+
+    current_assigned = technician.get("assigned_jobs_count") or 0
+    supabase.table("technicians").update({
+        "assigned_jobs_count": current_assigned + 1
+    }).eq("uuid", technician_id).execute()
+
+    maps_link = ""
+    if oldest_queued.get("client_lat") and oldest_queued.get("client_lng"):
+        maps_link = f"https://www.google.com/maps?q={oldest_queued['client_lat']},{oldest_queued['client_lng']}"
+
+    email_html = f"""
+    <h2>New {get_display_category(oldest_queued.get('category')).upper()} Job Assigned</h2>
+    <p><strong>Problem:</strong> {oldest_queued.get('description')}</p>
+    <p><strong>Client Phone:</strong> {oldest_queued.get('phone_number')}</p>
+    {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+    """
+
+    send_email(
+        to_email=technician.get("email_address"),
+        subject=f"New {get_display_category(oldest_queued.get('category')).upper()} Job - Action Needed",
+        html_content=email_html,
+        from_email="career@mayndstomir.com",
+        from_name="MSA Careers"
+    )
+
+
 class CompleteJobRequest(BaseModel):
-    payout_amount: Optional[float] = None
+    completed_by: str  # "technician" or "client"
 
 @app.patch("/jobs/{job_id}/complete", dependencies=[Depends(verify_api_key)])
-async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobRequest()):
+async def complete_job(job_id: str, body: CompleteJobRequest):
     try:
+        if body.completed_by not in ["technician", "client"]:
+            raise HTTPException(status_code=400, detail="completed_by must be 'technician' or 'client'")
+
         response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -432,73 +552,65 @@ async def complete_job(job_id: str, body: CompleteJobRequest = CompleteJobReques
         job = response.data[0]
         internal_job_id = job.get("uuid")
 
-        supabase.table("jobs").update({
-            "status": "completed",
-            "payout_amount": body.payout_amount
-        }).eq("uuid", internal_job_id).execute()
+        if job.get("status") not in ["paid", "pending_completion"]:
+            raise HTTPException(status_code=400, detail=f"Job cannot be completed from status '{job.get('status')}'")
 
-        technician_id = job.get("assigned_technician_id")
-        if technician_id:
-            tech_response = supabase.table("technicians").select("completed_jobs_count, assigned_jobs_count, email_address, full_name, is_approved").eq("uuid", technician_id).execute()
-            if tech_response.data:
-                technician = tech_response.data[0]
-                current_completed = technician.get("completed_jobs_count") or 0
-                current_assigned = technician.get("assigned_jobs_count") or 0
-                supabase.table("technicians").update({
-                    "completed_jobs_count": current_completed + 1,
-                    "assigned_jobs_count": max(current_assigned - 1, 0),
-                    "is_available": True
-                }).eq("uuid", technician_id).execute()
+        now = datetime.now(timezone.utc).isoformat()
+        update_fields = {}
 
-                if technician.get("is_approved") is True:
-                    formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
-                    completion_timestamp = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M")
-                    payout_display = "Pending"
+        if body.completed_by == "technician":
+            update_fields["tech_completed"] = True
+            update_fields["tech_completed_at"] = now
+        else:
+            update_fields["client_completed"] = True
+            update_fields["client_completed_at"] = now
 
-                    try:
-                        with open("job-completed-email.html", "r", encoding="utf-8") as file:
-                            completion_email_html = file.read()
+        supabase.table("jobs").update(update_fields).eq("uuid", internal_job_id).execute()
 
-                        completion_email_html = completion_email_html \
-                            .replace("{{technician_name}}", technician.get("full_name") or "Partner") \
-                            .replace("{{job_id}}", formatted_job_id) \
-                            .replace("{{trade_category}}", get_display_category(job.get("category"))) \
-                            .replace("{{completion_timestamp}}", completion_timestamp) \
-                            .replace("{{payout_amount}}", payout_display)
-                    except FileNotFoundError:
-                        completion_email_html = f"""
-                        <h2>Job Completed</h2>
-                        <p>Job {formatted_job_id} has been marked as completed. Payout: {payout_display}.</p>
-                        """
+        tech_completed_now = update_fields.get("tech_completed", job.get("tech_completed") or False)
+        client_completed_now = update_fields.get("client_completed", job.get("client_completed") or False)
 
-                    send_email(
-                        to_email=technician.get("email_address"),
-                        subject=f"Job Completed — Receipt {formatted_job_id}",
-                        html_content=completion_email_html,
-                        from_email="career@mayndstomir.com",
-                        from_name="MSA Careers"
-                    )
-                else:
-                    print(f"Skipped completion receipt — technician {technician_id} is not approved (approval revoked after assignment)")
-
-        client_completion_email_html = f"""
-        <h2>Your Request Has Been Completed</h2>
-        <p>Hi {job.get('customer_name')},</p>
-        <p>Your maintenance request for <strong>{job.get('category')}</strong> has been marked as completed. Thank you for using Maynd Stomir!</p>
-        """
-
-        send_email(
-            to_email=job.get("email"),
-            subject="Your Maintenance Request Has Been Completed",
-            html_content=client_completion_email_html
-        )
-
-        return {"success": True, "message": "Job marked as completed"}
+        if tech_completed_now and client_completed_now:
+            supabase.table("jobs").update({"status": "completed"}).eq("uuid", internal_job_id).execute()
+            finalize_job_completion(job, internal_job_id)
+            return {"success": True, "message": "Job fully completed", "status": "completed"}
+        else:
+            supabase.table("jobs").update({"status": "pending_completion"}).eq("uuid", internal_job_id).execute()
+            return {"success": True, "message": f"Completion recorded for {body.completed_by}; awaiting the other party", "status": "pending_completion"}
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/jobs/auto-close-check", dependencies=[Depends(verify_api_key)])
+async def auto_close_stale_jobs():
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+        stale_jobs = supabase.table("jobs").select("*").eq("status", "pending_completion").eq("tech_completed", True).eq("client_completed", False).lte("tech_completed_at", cutoff).execute()
+
+        closed_count = 0
+        for job in stale_jobs.data:
+            internal_job_id = job.get("uuid")
+            now = datetime.now(timezone.utc).isoformat()
+
+            supabase.table("jobs").update({
+                "client_completed": True,
+                "client_completed_at": now,
+                "status": "completed"
+            }).eq("uuid", internal_job_id).execute()
+
+            finalize_job_completion(job, internal_job_id)
+            closed_count += 1
+
+        return {"success": True, "message": f"Auto-closed {closed_count} stale job(s)"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class ReassignRequest(BaseModel):
     technician_id: int
 
