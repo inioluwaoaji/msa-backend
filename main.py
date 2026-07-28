@@ -311,16 +311,16 @@ async def create_job(request: Request, job: MaintenanceRequest):
             )
 
         client_email_html = f"""
-        <h2>Your Request Has Been Assigned</h2>
+        <h2>Request Received — Matching Your Technician</h2>
         <p>Hi {job.full_name},</p>
-        <p>Your maintenance request for <strong>{job.category}</strong> has been assigned to a technician who will contact you shortly.</p>
+        <p>We've received your maintenance request for <strong>{job.category}</strong> and are matching you with the nearest available technician.</p>
         <p><strong>Description:</strong> {job.description}</p>
         {'<p><a href="' + tracking_url + '">Track your request status here</a></p>' if tracking_url else ''}
         """
 
         send_email(
             to_email=job.email,
-            subject="Your Maintenance Request Has Been Assigned",
+            subject="Request Received — Matching Your Technician",
             html_content=client_email_html
         )
 
@@ -473,15 +473,18 @@ def finalize_job_completion(job: dict, internal_job_id: int):
 
             assign_queued_job_to_technician(technician_id, technician)
 
+    receipt_amount = f"QAR {job.get('total_amount'):.2f}" if job.get('total_amount') else "N/A"
+
     client_completion_email_html = f"""
-    <h2>Your Request Has Been Completed</h2>
+    <h2>Job Finalized — Thank You!</h2>
     <p>Hi {job.get('customer_name')},</p>
-    <p>Your maintenance request for <strong>{job.get('category')}</strong> has been marked as completed. Thank you for using Maynd Stomir!</p>
+    <p>Your maintenance request for <strong>{job.get('category')}</strong> has been finalized. Thank you for using Maynd Stomir!</p>
+    <p><strong>Total Paid:</strong> {receipt_amount}</p>
     """
 
     send_email(
         to_email=job.get("email"),
-        subject="Your Maintenance Request Has Been Completed",
+        subject="Job Finalized — Thank You!",
         html_content=client_completion_email_html
     )
 
@@ -576,6 +579,21 @@ async def complete_job(job_id: str, body: CompleteJobRequest):
             return {"success": True, "message": "Job fully completed", "status": "completed"}
         else:
             supabase.table("jobs").update({"status": "pending_completion"}).eq("uuid", internal_job_id).execute()
+
+            if body.completed_by == "technician":
+                verify_url = f"https://www.mayndstomir.com/status?id={job.get('tracking_token')}"
+                verify_email_html = f"""
+                <h2>Work Completed — Please Verify & Confirm</h2>
+                <p>Hi {job.get('customer_name')},</p>
+                <p>Your technician has marked the repair as complete. Please confirm to finalize the job.</p>
+                <p><a href="{verify_url}">Confirm Completion</a></p>
+                """
+                send_email(
+                    to_email=job.get("email"),
+                    subject="Work Completed — Please Verify & Confirm",
+                    html_content=verify_email_html
+                )
+
             return {"success": True, "message": f"Completion recorded for {body.completed_by}; awaiting the other party", "status": "pending_completion"}
 
     except HTTPException:
@@ -698,6 +716,23 @@ async def accept_job(job_id: str):
         supabase.table("jobs").update({
             "status": "in_diagnostics"
         }).eq("uuid", internal_job_id).execute()
+
+        technician_id = job.get("assigned_technician_id")
+        if technician_id:
+            tech_response = supabase.table("technicians").select("full_name, phone_number").eq("uuid", technician_id).execute()
+            if tech_response.data:
+                technician = tech_response.data[0]
+                client_email_html = f"""
+                <h2>Technician Assigned — En Route!</h2>
+                <p>Hi {job.get('customer_name')},</p>
+                <p><strong>{technician.get('full_name')}</strong> has accepted your request and will be en route shortly.</p>
+                <p><strong>Technician Phone:</strong> {technician.get('phone_number')}</p>
+                """
+                send_email(
+                    to_email=job.get("email"),
+                    subject="Technician Assigned — En Route!",
+                    html_content=client_email_html
+                )
 
         return {"success": True, "message": "Job accepted", "status": "in_diagnostics"}
 
@@ -825,7 +860,7 @@ async def submit_quote(job_id: str, body: QuoteRequest):
         invoice_url = f"https://www.mayndstomir.com/invoice?id={job.get('tracking_token')}"
 
         client_email_html = f"""
-        <h2>Your Repair Quote Is Ready</h2>
+        <h2>Diagnostic Complete — Invoice Ready</h2>
         <p>Hi {job.get('customer_name')},</p>
         <p>Total amount due: QAR {total_amount:.2f}</p>
         <p><a href="{invoice_url}">View Invoice & Pay Now</a></p>
@@ -833,11 +868,64 @@ async def submit_quote(job_id: str, body: QuoteRequest):
 
         send_email(
             to_email=job.get("email"),
-            subject="Your Invoice Is Ready — Payment Required",
+            subject="Diagnostic Complete — Invoice Ready",
             html_content=client_email_html
         )
 
         return {"success": True, "message": "Quote submitted", "total_amount": total_amount, "payment_url": payment_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@app.patch("/jobs/{job_id}/mark-paid", dependencies=[Depends(verify_api_key)])
+async def mark_job_paid(job_id: str):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+
+        if job.get("status") != "awaiting_payment":
+            raise HTTPException(status_code=400, detail=f"Job cannot be marked paid from status '{job.get('status')}'")
+
+        supabase.table("jobs").update({
+            "status": "paid",
+            "paid_at": datetime.now(timezone.utc).isoformat()
+        }).eq("uuid", internal_job_id).execute()
+
+        technician_id = job.get("assigned_technician_id")
+        if technician_id:
+            tech_response = supabase.table("technicians").select("email_address, full_name").eq("uuid", technician_id).execute()
+            if tech_response.data:
+                technician = tech_response.data[0]
+                proceed_email_html = f"""
+                <h2>Payment Confirmed — Proceed with Repair</h2>
+                <p>Hi {technician.get('full_name')},</p>
+                <p>Payment has been confirmed for job at {job.get('customer_name')}. You may now proceed with the repair.</p>
+                """
+                send_email(
+                    to_email=technician.get("email_address"),
+                    subject="Payment Confirmed — Proceed with Repair",
+                    html_content=proceed_email_html,
+                    from_email="career@mayndstomir.com",
+                    from_name="MSA Careers"
+                )
+
+        client_paid_email_html = f"""
+        <h2>Payment Confirmed — Repair Authorized</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your payment has been confirmed. Your technician is now authorized to proceed with the repair.</p>
+        """
+        send_email(
+            to_email=job.get("email"),
+            subject="Payment Confirmed — Repair Authorized",
+            html_content=client_paid_email_html
+        )
+
+        return {"success": True, "message": "Job marked as paid", "status": "paid"}
 
     except HTTPException:
         raise
