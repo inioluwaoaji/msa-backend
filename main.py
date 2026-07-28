@@ -185,7 +185,7 @@ def verify_api_key(x_api_key: str = Header(None)):
         raise HTTPException(status_code=500, detail="Server API key not configured")
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
-        class FreelanceApplication(BaseModel):
+class FreelanceApplication(BaseModel):
     full_name: str
     email: str
     phone_number: str
@@ -196,7 +196,7 @@ def verify_api_key(x_api_key: str = Header(None)):
     id_photo_url: str
     notes: Optional[str] = None
     tech_lat: Optional[float] = None
-    tech_lng: Optional[float] = None
+    tech_lng: Optional[float] = None      
 
 @app.get("/")
 def read_root():
