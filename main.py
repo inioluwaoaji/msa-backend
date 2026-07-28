@@ -1,12 +1,15 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from supabase import create_client, Client
-import resend 
+import resend
 import math
 from datetime import datetime, timezone, timedelta
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 def calculate_distance(lat1, lng1, lat2, lng2):
     R = 6371
@@ -15,6 +18,7 @@ def calculate_distance(lat1, lng1, lat2, lng2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
+
 CATEGORY_SYNONYMS = {
     "ac": "hvac",
     "air conditioning": "hvac",
@@ -24,7 +28,7 @@ CATEGORY_SYNONYMS = {
     "electrician": "electrical",
     "carpenter": "carpentry",
 }
- 
+
 CATEGORY_DISPLAY_NAMES = {
     "hvac": "HVAC",
     "plumbing": "Plumbing",
@@ -40,19 +44,27 @@ CATEGORY_DISPLAY_NAMES = {
     "locks_security": "Locks & Security",
     "other": "Other"
 }
+
 ACTIVE_JOB_STATUSES = ["dispatched", "in_diagnostics", "awaiting_payment", "paid"]
 
 def get_display_category(raw_value):
     if not raw_value:
         return raw_value
     return CATEGORY_DISPLAY_NAMES.get(raw_value.strip().lower(), raw_value)
+
 def normalize_category(value: str) -> str:
     if not value:
         return ""
     cleaned = value.strip().lower()
     return CATEGORY_SYNONYMS.get(cleaned, cleaned)
-from fastapi import Request
-def find_available_technician(category: str, client_lat: Optional[float], client_lng: Optional[float], exclude_technician_id: Optional[int] = None):
+
+def find_available_technician(
+    category: str,
+    client_lat: Optional[float],
+    client_lng: Optional[float],
+    exclude_technician_id: Optional[str] = None,
+    lock: bool = True
+):
     normalized_category = normalize_category(category)
     tech_response = supabase.table("technicians").select("*").execute()
     tech_response.data = [
@@ -88,21 +100,22 @@ def find_available_technician(category: str, client_lat: Optional[float], client
 
     for candidate in available_technicians:
         candidate_id = candidate.get("uuid")
-        claim_result = supabase.table("technicians").update({
-            "is_available": False
-        }).eq("uuid", candidate_id).eq("is_available", True).execute()
 
-        if claim_result.data:
+        if lock:
+            claim_result = supabase.table("technicians").update({
+                "is_available": False
+            }).eq("uuid", candidate_id).eq("is_available", True).execute()
+
+            if claim_result.data:
+                return candidate
+        else:
             return candidate
 
     return None
+
 def generate_payment_link(job_id: int, amount: float, tracking_token: str) -> str:
-    # TODO: replace with a real Sadad/SkipCash API call once the merchant account and credentials exist.
-    # For now this returns a placeholder so the rest of the flow can be built and tested.
-    return f"https://www.mayndstomir.com/pay-placeholder?job={job_id}&amount={amount}"  
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
+    # TODO: replace with real SkipCash / Sadad API call later
+    return f"https://www.mayndstomir.com/pay-placeholder?job={job_id}&amount={amount}"
 
 app = FastAPI(title="Maynd Stomir Backend API")
 
@@ -130,6 +143,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variables.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
@@ -163,7 +177,6 @@ def send_email(to_email: str, subject: str, html_content: str, from_email: str =
             }).execute()
         except Exception:
             pass
-from fastapi import Header, Depends
 
 API_KEY = os.environ.get("API_KEY")
 
@@ -172,8 +185,7 @@ def verify_api_key(x_api_key: str = Header(None)):
         raise HTTPException(status_code=500, detail="Server API key not configured")
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
-# Matches Olamiposi's payload fields exactly
-class FreelanceApplication(BaseModel):
+        class FreelanceApplication(BaseModel):
     full_name: str
     email: str
     phone_number: str
@@ -190,7 +202,7 @@ class FreelanceApplication(BaseModel):
 def read_root():
     return {"status": "healthy", "message": "Maynd Stomir Backend API is running"}
 
-@app.post("/freelance_applications", dependencies=[Depends(verify_api_key)])
+post("/freelance_applications", dependencies=[Depends(verify_api_key)])
 @limiter.limit("5/minute")
 async def create_application(request: Request, application: FreelanceApplication):
     TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
@@ -258,16 +270,20 @@ async def create_job(request: Request, job: MaintenanceRequest):
             "client_lat": job.client_lat,
             "client_lng": job.client_lng
         }
-            
 
         response = supabase.table("jobs").insert(data).execute()
         job_data = response.data[0]
         job_id = job_data["uuid"]
-
         tracking_token = job_data.get("tracking_token")
         tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
 
-        technician = find_available_technician(job.category, job.client_lat, job.client_lng)
+        # Find candidate WITHOUT locking
+        technician = find_available_technician(
+            job.category,
+            job.client_lat,
+            job.client_lng,
+            lock=False
+        )
 
         if technician:
             assigned_name = technician.get("full_name")
@@ -286,25 +302,29 @@ async def create_job(request: Request, job: MaintenanceRequest):
             job_data["assigned_technician_id"] = assigned_id
             job_data["status"] = "dispatched"
 
-            current_assigned = technician.get("assigned_jobs_count") or 0
-            supabase.table("technicians").update({
-                "assigned_jobs_count": current_assigned + 1
-            }).eq("uuid", assigned_id).execute()
+            job_manage_url = f"https://www.mayndstomir.com/job-manage.html?id={tracking_token}"
 
             maps_link = ""
             if job.client_lat and job.client_lng:
                 maps_link = f"https://www.google.com/maps?q={job.client_lat},{job.client_lng}"
 
             email_html = f"""
-            <h2>New {job.category.upper()} Job Assigned</h2>
+            <h2>New Job Invitation — {get_display_category(job.category)}</h2>
             <p><strong>Problem:</strong> {job.description}</p>
             <p><strong>Client Phone:</strong> {job.phone_number}</p>
-            {'<p><strong>Live Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+            {'<p><strong>Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+            <p style="margin-top:20px;">
+                <a href="{job_manage_url}" 
+                   style="background:#2563eb;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+                   Accept or Decline Job
+                </a>
+            </p>
+            <p style="font-size:12px;color:#666;">Or copy this link: {job_manage_url}</p>
             """
 
             send_email(
                 to_email=technician.get("email_address"),
-                subject=f"New {job.category.upper()} Job - Action Needed",
+                subject=f"New {get_display_category(job.category)} Job Invitation",
                 html_content=email_html,
                 from_email="career@mayndstomir.com",
                 from_name="MSA Careers"
@@ -313,7 +333,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
         client_email_html = f"""
         <h2>Request Received — Matching Your Technician</h2>
         <p>Hi {job.full_name},</p>
-        <p>We've received your maintenance request for <strong>{job.category}</strong> and are matching you with the nearest available technician.</p>
+        <p>We've received your maintenance request for <strong>{get_display_category(job.category)}</strong> and are matching you with the nearest available technician.</p>
         <p><strong>Description:</strong> {job.description}</p>
         {'<p><a href="' + tracking_url + '">Track your request status here</a></p>' if tracking_url else ''}
         """
@@ -325,7 +345,6 @@ async def create_job(request: Request, job: MaintenanceRequest):
         )
 
         job_data["id"] = job_data.pop("uuid")
-
         return {"success": True, "data": [job_data]}
 
     except Exception as e:
@@ -713,26 +732,42 @@ async def accept_job(job_id: str):
         if job.get("status") != "dispatched":
             raise HTTPException(status_code=400, detail=f"Job cannot be accepted from status '{job.get('status')}'")
 
+        technician_id = job.get("assigned_technician_id")
+        if not technician_id:
+            raise HTTPException(status_code=400, detail="No technician assigned to this job")
+
+        # Lock the technician NOW
+        supabase.table("technicians").update({
+            "is_available": False
+        }).eq("uuid", technician_id).execute()
+
+        # Increase assigned count
+        tech_count = supabase.table("technicians").select("assigned_jobs_count").eq("uuid", technician_id).execute()
+        if tech_count.data:
+            current = tech_count.data[0].get("assigned_jobs_count") or 0
+            supabase.table("technicians").update({
+                "assigned_jobs_count": current + 1
+            }).eq("uuid", technician_id).execute()
+
         supabase.table("jobs").update({
-            "status": "in_diagnostics"
+            "status": "in_diagnostics",
+            "accepted_at": datetime.now(timezone.utc).isoformat()
         }).eq("uuid", internal_job_id).execute()
 
-        technician_id = job.get("assigned_technician_id")
-        if technician_id:
-            tech_response = supabase.table("technicians").select("full_name, phone_number").eq("uuid", technician_id).execute()
-            if tech_response.data:
-                technician = tech_response.data[0]
-                client_email_html = f"""
-                <h2>Technician Assigned — En Route!</h2>
-                <p>Hi {job.get('customer_name')},</p>
-                <p><strong>{technician.get('full_name')}</strong> has accepted your request and will be en route shortly.</p>
-                <p><strong>Technician Phone:</strong> {technician.get('phone_number')}</p>
-                """
-                send_email(
-                    to_email=job.get("email"),
-                    subject="Technician Assigned — En Route!",
-                    html_content=client_email_html
-                )
+        tech_response = supabase.table("technicians").select("full_name, phone_number").eq("uuid", technician_id).execute()
+        if tech_response.data:
+            technician = tech_response.data[0]
+            client_email_html = f"""
+            <h2>Technician Assigned — En Route!</h2>
+            <p>Hi {job.get('customer_name')},</p>
+            <p><strong>{technician.get('full_name')}</strong> has accepted your request and will be en route shortly.</p>
+            <p><strong>Technician Phone:</strong> {technician.get('phone_number')}</p>
+            """
+            send_email(
+                to_email=job.get("email"),
+                subject="Technician Assigned — En Route!",
+                html_content=client_email_html
+            )
 
         return {"success": True, "message": "Job accepted", "status": "in_diagnostics"}
 
@@ -740,8 +775,6 @@ async def accept_job(job_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.patch("/jobs/{job_id}/reject", dependencies=[Depends(verify_api_key)])
 async def decline_job(job_id: str):
     try:
