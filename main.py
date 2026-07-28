@@ -202,7 +202,7 @@ class FreelanceApplication(BaseModel):
 def read_root():
     return {"status": "healthy", "message": "Maynd Stomir Backend API is running"}
 
-post("/freelance_applications", dependencies=[Depends(verify_api_key)])
+@app.post("/freelance_applications", dependencies=[Depends(verify_api_key)])
 @limiter.limit("5/minute")
 async def create_application(request: Request, application: FreelanceApplication):
     TRADES_REQUIRING_KAHRAMAA = {"electrical", "plumbing", "hvac"}
