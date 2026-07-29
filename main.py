@@ -349,6 +349,46 @@ async def create_job(request: Request, job: MaintenanceRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class GeocodeRequest(BaseModel):
+    query: str
+
+@app.post("/geocode/places-textsearch")
+@limiter.limit("10/minute")
+async def geocode_places_textsearch(request: Request, body: GeocodeRequest):
+    google_api_key = os.environ.get("GOOGLE_API_KEY")
+    if not google_api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is not configured on the server")
+
+    if not body.query or not body.query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+
+    import urllib.parse
+    import httpx
+
+    encoded_query = urllib.parse.quote(body.query.strip())
+    url = f"https://maps.googleapis.com/maps/api/geocode/json?address={encoded_query}&key={google_api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            data = response.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Google Geocoding API: {str(e)}")
+
+    if data.get("status") != "OK" or not data.get("results"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No results found for query. Google status: {data.get('status')}"
+        )
+
+    result = data["results"][0]
+    location = result["geometry"]["location"]
+
+    return {
+        "formatted_address": result.get("formatted_address"),
+        "lat": location.get("lat"),
+        "lng": location.get("lng")
+    }
 @app.get("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
 async def get_job(job_id: str):
     try:
