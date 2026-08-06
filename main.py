@@ -7,6 +7,10 @@ from supabase import create_client, Client
 import resend
 import math
 from datetime import datetime, timezone, timedelta
+import hmac
+import hashlib
+import base64
+import httpx
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -113,9 +117,60 @@ def find_available_technician(
 
     return None
 
-def generate_payment_link(job_id: int, amount: float, tracking_token: str) -> str:
-    # TODO: replace with real SkipCash / Sadad API call later
-    return f"https://www.mayndstomir.com/pay-placeholder?job={job_id}&amount={amount}"
+SKIPCASH_CLIENT_ID = os.environ.get("SKIPCASH_CLIENT_ID")
+SKIPCASH_KEY_ID = os.environ.get("SKIPCASH_KEY_ID")
+SKIPCASH_SECRET_KEY = os.environ.get("SKIPCASH_SECRET_KEY")
+SKIPCASH_WEBHOOK_KEY = os.environ.get("SKIPCASH_WEBHOOK_KEY")
+SKIPCASH_API_URL = os.environ.get("SKIPCASH_API_URL")
+
+def compute_skipcash_signature(combined_string: str, secret: str) -> str:
+    digest = hmac.new(secret.encode("utf-8"), combined_string.encode("utf-8"), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+def generate_payment_link(job_id: int, amount: float, tracking_token: str, customer_name: str, phone_number: str, email: str) -> Optional[str]:
+    name_parts = (customer_name or "Customer").strip().split(" ", 1)
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else "N/A"
+    amount_str = f"{amount:.2f}"
+
+    payment_details = {
+        "Uid": SKIPCASH_CLIENT_ID,
+        "KeyId": SKIPCASH_KEY_ID,
+        "Amount": amount_str,
+        "FirstName": first_name,
+        "LastName": last_name,
+        "Phone": phone_number,
+        "Email": email,
+        "TransactionId": tracking_token,
+    }
+
+    combined_data = (
+        f"Uid={payment_details['Uid']},KeyId={payment_details['KeyId']},"
+        f"Amount={payment_details['Amount']},FirstName={payment_details['FirstName']},"
+        f"LastName={payment_details['LastName']},Phone={payment_details['Phone']},"
+        f"Email={payment_details['Email']},TransactionId={payment_details['TransactionId']}"
+    )
+
+    signature = compute_skipcash_signature(combined_data, SKIPCASH_SECRET_KEY)
+
+    try:
+        response = httpx.post(
+            f"{SKIPCASH_API_URL}/api/v1/payments",
+            json=payment_details,
+            headers={"Authorization": signature},
+            timeout=15
+        )
+        response_data = response.json()
+        print(f"SkipCash payment creation response: {response_data}")
+
+        payment_url = response_data.get("PaymentUrl") or response_data.get("paymentUrl") or response_data.get("Url")
+        if not payment_url:
+            print("SkipCash response missing recognizable payment URL field — check the logged response above and adjust the field name.")
+        return payment_url
+
+    except Exception as e:
+        print(f"SkipCash payment creation failed: {e}")
+        return None
 
 app = FastAPI(title="Maynd Stomir Backend API")
 
@@ -921,8 +976,15 @@ async def submit_quote(job_id: str, body: QuoteRequest):
             raise HTTPException(status_code=400, detail=f"Quote cannot be submitted from status '{job.get('status')}'")
 
         total_amount = CALL_OUT_FEE + (body.parts_cost or 0) + (body.sourcing_fee or 0) + (body.labor_cost or 0)
-
-        payment_url = generate_payment_link(job_id=internal_job_id, amount=total_amount, tracking_token=job.get("tracking_token"))
+        payment_url = generate_payment_link(
+            job_id=internal_job_id,
+            amount=total_amount,
+            tracking_token=job.get("tracking_token"),
+            customer_name=job.get("customer_name"),
+            phone_number=job.get("phone_number"),
+            email=job.get("email")
+        )
+        
 
         supabase.table("jobs").update({
             "parts_cost": body.parts_cost,
@@ -1007,6 +1069,89 @@ async def mark_job_paid(job_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/payments/webhook")
+async def skipcash_webhook(request: Request):
+    try:
+        body = await request.json()
+        received_signature = request.headers.get("Authorization", "")
+
+        payment_id = body.get("PaymentId")
+        amount = body.get("Amount")
+        status_id = body.get("StatusId")
+        transaction_id = body.get("TransactionId")
+        custom1 = body.get("Custom1")
+        visa_id = body.get("VisaId")
+
+        parts = [f"PaymentId={payment_id}", f"Amount={amount}", f"StatusId={status_id}"]
+        if transaction_id:
+            parts.append(f"TransactionId={transaction_id}")
+        if custom1:
+            parts.append(f"Custom1={custom1}")
+        parts.append(f"VisaId={visa_id}")
+        combined_data = ",".join(parts)
+
+        expected_signature = compute_skipcash_signature(combined_data, SKIPCASH_WEBHOOK_KEY)
+
+        if not hmac.compare_digest(expected_signature, received_signature):
+            print("SkipCash webhook signature mismatch — rejecting.")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+        if status_id != 2:
+            return {"success": True, "message": "Webhook received, no action for this status"}
+
+        if not transaction_id:
+            return {"success": True, "message": "Webhook received, no transaction id to match"}
+
+        job_response = supabase.table("jobs").select("*").eq("tracking_token", transaction_id).execute()
+        if not job_response.data:
+            return {"success": True, "message": "No matching job found"}
+
+        job = job_response.data[0]
+        if job.get("status") != "awaiting_payment":
+            return {"success": True, "message": "Job already processed or not awaiting payment"}
+
+        internal_job_id = job.get("uuid")
+        supabase.table("jobs").update({
+            "status": "paid",
+            "paid_at": datetime.now(timezone.utc).isoformat()
+        }).eq("uuid", internal_job_id).execute()
+
+        technician_id = job.get("assigned_technician_id")
+        if technician_id:
+            tech_response = supabase.table("technicians").select("email_address, full_name").eq("uuid", technician_id).execute()
+            if tech_response.data:
+                technician = tech_response.data[0]
+                proceed_email_html = f"""
+                <h2>Payment Confirmed — Proceed with Repair</h2>
+                <p>Hi {technician.get('full_name')},</p>
+                <p>Payment has been confirmed for job at {job.get('customer_name')}. You may now proceed with the repair.</p>
+                """
+                send_email(
+                    to_email=technician.get("email_address"),
+                    subject="Payment Confirmed — Proceed with Repair",
+                    html_content=proceed_email_html,
+                    from_email="career@mayndstomir.com",
+                    from_name="MSA Careers"
+                )
+
+        client_paid_email_html = f"""
+        <h2>Payment Confirmed — Repair Authorized</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your payment has been confirmed. Your technician is now authorized to proceed with the repair.</p>
+        """
+        send_email(
+            to_email=job.get("email"),
+            subject="Payment Confirmed — Repair Authorized",
+            html_content=client_paid_email_html
+        )
+
+        return {"success": True, "message": "Payment confirmed and job updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"SkipCash webhook processing error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/email_failures", dependencies=[Depends(verify_api_key)])
 async def get_email_failures():
