@@ -50,6 +50,7 @@ CATEGORY_DISPLAY_NAMES = {
 }
 
 ACTIVE_JOB_STATUSES = ["dispatched", "in_diagnostics", "awaiting_payment", "paid"]
+CALL_OUT_FEE = 50
 
 def get_display_category(raw_value):
     if not raw_value:
@@ -314,7 +315,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
     try:
         combined_datetime = f"{job.preferred_date}T{job.preferred_time}:00"
 
-        data = {
+         data = {
             "customer_name": job.full_name,
             "phone_number": job.phone_number,
             "category": job.category,
@@ -325,7 +326,7 @@ async def create_job(request: Request, job: MaintenanceRequest):
             "email": job.email,
             "photo_url": job.job_photo_url,
             "customer_availability": combined_datetime,
-            "status": "pending_dispatch",
+            "status": "pending_payment",
             "client_lat": job.client_lat,
             "client_lng": job.client_lng
         }
@@ -334,82 +335,39 @@ async def create_job(request: Request, job: MaintenanceRequest):
         job_data = response.data[0]
         job_id = job_data["uuid"]
         tracking_token = job_data.get("tracking_token")
-        tracking_url = f"https://www.mayndstomir.com/status?id={tracking_token}" if tracking_token else ""
 
-        # Find candidate WITHOUT locking
-        technician = find_available_technician(
-            job.category,
-            job.client_lat,
-            job.client_lng,
-            lock=False
+        payment_url = generate_payment_link(
+            job_id=job_id,
+            amount=CALL_OUT_FEE,
+            tracking_token=tracking_token,
+            customer_name=job.full_name,
+            phone_number=job.phone_number,
+            email=job.email
         )
 
-        if technician:
-            assigned_name = technician.get("full_name")
-            assigned_id = technician.get("uuid")
+        supabase.table("jobs").update({
+            "payment_url": payment_url,
+            "total_amount": CALL_OUT_FEE
+        }).eq("uuid", job_id).execute()
 
-            supabase.table("jobs").update({
-                "assigned_technician": assigned_name,
-                "assigned_technician_id": assigned_id,
-                "status": "dispatched"
-            }).eq("uuid", job_id).execute()
-
-            job_data["assigned_technician"] = {
-                "name": assigned_name,
-                "phone": technician.get("phone_number")
-            }
-            job_data["assigned_technician_id"] = assigned_id
-            job_data["status"] = "dispatched"
-
-            job_manage_url = f"https://www.mayndstomir.com/job-manage.html?id={tracking_token}"
-
-            maps_link = ""
-            if job.client_lat and job.client_lng:
-                maps_link = f"https://www.google.com/maps?q={job.client_lat},{job.client_lng}"
-
-            email_html = f"""
-            <h2>New Job Invitation — {get_display_category(job.category)}</h2>
-            <p><strong>Problem:</strong> {job.description}</p>
-            <p><strong>Client Phone:</strong> {job.phone_number}</p>
-            {'<p><strong>Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
-            <p style="margin-top:20px;">
-                <a href="{job_manage_url}" 
-                   style="background:#2563eb;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
-                   Accept or Decline Job
-                </a>
-            </p>
-            <p style="font-size:12px;color:#666;">Or copy this link: {job_manage_url}</p>
-            """
-
-            send_email(
-                to_email=technician.get("email_address"),
-                subject=f"New {get_display_category(job.category)} Job Invitation",
-                html_content=email_html,
-                from_email="career@mayndstomir.com",
-                from_name="MSA Careers"
-            )
+        job_data["status"] = "pending_payment"
+        job_data["payment_url"] = payment_url
 
         client_email_html = f"""
-        <h2>Request Received — Matching Your Technician</h2>
+        <h2>Payment Required — QAR {CALL_OUT_FEE:.2f} Call-Out Fee</h2>
         <p>Hi {job.full_name},</p>
-        <p>We've received your maintenance request for <strong>{get_display_category(job.category)}</strong> and are matching you with the nearest available technician.</p>
+        <p>We've received your maintenance request for <strong>{get_display_category(job.category)}</strong>.</p>
+        <p>A mandatory call-out fee of QAR {CALL_OUT_FEE:.2f} is required before we dispatch a technician to you.</p>
+        <p><a href="{payment_url}">Pay Now</a></p>
         <p><strong>Description:</strong> {job.description}</p>
-        {'<p><a href="' + tracking_url + '">Track your request status here</a></p>' if tracking_url else ''}
         """
 
         send_email(
             to_email=job.email,
-            subject="Request Received — Matching Your Technician",
+            subject=f"Payment Required — QAR {CALL_OUT_FEE:.2f} Call-Out Fee",
             html_content=client_email_html
         )
-
-        job_data["id"] = job_data.pop("uuid")
-        return {"success": True, "data": [job_data]}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-class GeocodeRequest(BaseModel):
-    query: str
+          
 
 @app.post("/geocode/places-textsearch")
 @limiter.limit("10/minute")
@@ -656,6 +614,78 @@ def assign_queued_job_to_technician(technician_id: int, technician: dict):
         from_name="MSA Careers"
     )
 
+def dispatch_technician_for_job(job: dict, internal_job_id: int):
+    technician = find_available_technician(
+        job.get("category"),
+        job.get("client_lat"),
+        job.get("client_lng"),
+        lock=False
+    )
+
+    tracking_token = job.get("tracking_token")
+
+    if technician:
+        assigned_name = technician.get("full_name")
+        assigned_id = technician.get("uuid")
+
+        supabase.table("jobs").update({
+            "assigned_technician": assigned_name,
+            "assigned_technician_id": assigned_id,
+            "status": "dispatched"
+        }).eq("uuid", internal_job_id).execute()
+
+        job_manage_url = f"https://www.mayndstomir.com/job-manage.html?id={tracking_token}"
+
+        maps_link = ""
+        if job.get("client_lat") and job.get("client_lng"):
+            maps_link = f"https://www.google.com/maps?q={job['client_lat']},{job['client_lng']}"
+
+        email_html = f"""
+        <h2>New Job Invitation — {get_display_category(job.get('category'))}</h2>
+        <p><strong>Problem:</strong> {job.get('description')}</p>
+        <p><strong>Client Phone:</strong> {job.get('phone_number')}</p>
+        {'<p><strong>Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+        <p style="margin-top:20px;">
+            <a href="{job_manage_url}" 
+               style="background:#2563eb;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+               Accept or Decline Job
+            </a>
+        </p>
+        <p style="font-size:12px;color:#666;">Or copy this link: {job_manage_url}</p>
+        """
+
+        send_email(
+            to_email=technician.get("email_address"),
+            subject=f"New {get_display_category(job.get('category'))} Job Invitation",
+            html_content=email_html,
+            from_email="career@mayndstomir.com",
+            from_name="MSA Careers"
+        )
+
+        client_dispatch_email_html = f"""
+        <h2>Technician Matching In Progress</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your payment has been confirmed and we're matching you with the nearest available technician.</p>
+        """
+        send_email(
+            to_email=job.get("email"),
+            subject="Payment Confirmed — Matching Your Technician",
+            html_content=client_dispatch_email_html
+        )
+    else:
+        supabase.table("jobs").update({
+            "status": "pending_dispatch"
+        }).eq("uuid", internal_job_id).execute()
+
+        admin_alert_html = f"""
+        <h2>No Technician Available — Job Queued</h2>
+        <p>Job for {job.get('customer_name')} ({get_display_category(job.get('category'))}) is paid but no technician is currently available. It has been queued.</p>
+        """
+        send_email(
+            to_email="customerservice@mayndstomir.com",
+            subject="Job Queued — No Technician Available",
+            html_content=admin_alert_html
+        )
 
 class CompleteJobRequest(BaseModel):
     completed_by: str  # "technician" or "client"
@@ -959,9 +989,6 @@ async def decline_job(job_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-CALL_OUT_FEE = 50
-
 @app.post("/jobs/{job_id}/quotes", dependencies=[Depends(verify_api_key)])
 async def submit_quote(job_id: str, body: QuoteRequest):
     try:
@@ -975,7 +1002,7 @@ async def submit_quote(job_id: str, body: QuoteRequest):
         if job.get("status") != "in_diagnostics":
             raise HTTPException(status_code=400, detail=f"Quote cannot be submitted from status '{job.get('status')}'")
 
-        total_amount = CALL_OUT_FEE + (body.parts_cost or 0) + (body.sourcing_fee or 0) + (body.labor_cost or 0)
+        total_amount = (body.parts_cost or 0) + (body.sourcing_fee or 0) + (body.labor_cost or 0)
         payment_url = generate_payment_link(
             job_id=internal_job_id,
             amount=total_amount,
@@ -1027,8 +1054,12 @@ async def mark_job_paid(job_id: str):
         job = response.data[0]
         internal_job_id = job.get("uuid")
 
-        if job.get("status") != "awaiting_payment":
+        if job.get("status") not in ["pending_payment", "awaiting_payment"]:
             raise HTTPException(status_code=400, detail=f"Job cannot be marked paid from status '{job.get('status')}'")
+
+        if job.get("status") == "pending_payment":
+            dispatch_technician_for_job(job, internal_job_id)
+            return {"success": True, "message": "Call-out fee confirmed manually, technician dispatch triggered"}
 
         supabase.table("jobs").update({
             "status": "paid",
@@ -1065,7 +1096,6 @@ async def mark_job_paid(job_id: str):
         )
 
         return {"success": True, "message": "Job marked as paid", "status": "paid"}
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1108,10 +1138,16 @@ async def skipcash_webhook(request: Request):
             return {"success": True, "message": "No matching job found"}
 
         job = job_response.data[0]
-        if job.get("status") != "awaiting_payment":
+        internal_job_id = job.get("uuid")
+        current_status = job.get("status")
+
+        if current_status == "pending_payment":
+            dispatch_technician_for_job(job, internal_job_id)
+            return {"success": True, "message": "Call-out fee confirmed, technician dispatch triggered"}
+
+        if current_status != "awaiting_payment":
             return {"success": True, "message": "Job already processed or not awaiting payment"}
 
-        internal_job_id = job.get("uuid")
         supabase.table("jobs").update({
             "status": "paid",
             "paid_at": datetime.now(timezone.utc).isoformat()
