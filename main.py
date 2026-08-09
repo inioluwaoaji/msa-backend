@@ -367,6 +367,11 @@ async def create_job(request: Request, job: MaintenanceRequest):
             subject=f"Payment Required — QAR {CALL_OUT_FEE:.2f} Call-Out Fee",
             html_content=client_email_html
         )
+        job_data["id"] = job_data.pop("uuid")
+        return {"success": True, "data": [job_data]}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
           
 
 @app.post("/geocode/places-textsearch")
