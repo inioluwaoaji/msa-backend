@@ -372,6 +372,14 @@ async def create_job(request: Request, job: MaintenanceRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        job_data["id"] = job_data.pop("uuid")
+        return {"success": True, "data": [job_data]}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GeocodeRequest(BaseModel):
+    query: str
           
 
 @app.post("/geocode/places-textsearch")
