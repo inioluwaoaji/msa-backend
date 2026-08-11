@@ -336,14 +336,9 @@ async def create_job(request: Request, job: MaintenanceRequest):
         job_id = job_data["uuid"]
         tracking_token = job_data.get("tracking_token")
 
-        payment_url = generate_payment_link(
-            job_id=job_id,
-            amount=CALL_OUT_FEE,
-            tracking_token=tracking_token,
-            customer_name=job.full_name,
-            phone_number=job.phone_number,
-            email=job.email
-        )
+        # Staging requirement from Yemi: force payment_url to null
+        # so the frontend shows the manual bank-transfer fallback card
+        payment_url = None
 
         supabase.table("jobs").update({
             "payment_url": payment_url,
@@ -352,15 +347,17 @@ async def create_job(request: Request, job: MaintenanceRequest):
 
         job_data["status"] = "pending_payment"
         job_data["payment_url"] = payment_url
+        job_data["id"] = job_data.pop("uuid")
 
-        pay_button_html = f'<p><a href="{payment_url}">Pay Now</a></p>' if payment_url else '<p>A payment link will follow shortly, or contact us for manual bank transfer instructions.</p>'
+        # Always give a real working link (never "None")
+        invoice_url = f"https://www.mayndstomir.com/invoice.html?id={tracking_token}"
 
         client_email_html = f"""
         <h2>Payment Required — QAR {CALL_OUT_FEE:.2f} Call-Out Fee</h2>
         <p>Hi {job.full_name},</p>
         <p>We've received your maintenance request for <strong>{get_display_category(job.category)}</strong>.</p>
         <p>A mandatory call-out fee of QAR {CALL_OUT_FEE:.2f} is required before we dispatch a technician to you.</p>
-        {pay_button_html}
+        <p><a href="{invoice_url}">Pay Now / View Invoice</a></p>
         <p><strong>Description:</strong> {job.description}</p>
         """
 
@@ -369,17 +366,11 @@ async def create_job(request: Request, job: MaintenanceRequest):
             subject=f"Payment Required — QAR {CALL_OUT_FEE:.2f} Call-Out Fee",
             html_content=client_email_html
         )
-        job_data["id"] = job_data.pop("uuid")
+
         return {"success": True, "data": [job_data]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        job_data["id"] = job_data.pop("uuid")
-        return {"success": True, "data": [job_data]}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 class GeocodeRequest(BaseModel):
     query: str
           
@@ -1117,6 +1108,79 @@ async def mark_job_paid(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 class ManualPaymentRequest(BaseModel):
     payment_reference: str
+@app.post("/jobs/{job_id}/manual-payment", dependencies=[Depends(verify_api_key)])
+async def submit_manual_payment(job_id: str, body: ManualPaymentRequest):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+
+        if job.get("status") not in ["pending_payment", "awaiting_payment"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Manual payment cannot be submitted from status '{job.get('status')}'"
+            )
+
+        supabase.table("jobs").update({
+            "status": "awaiting_verification",
+            "payment_reference": body.payment_reference
+        }).eq("uuid", internal_job_id).execute()
+
+        admin_alert_html = f"""
+        <h2>Manual Bank Transfer Submitted — Verification Needed</h2>
+        <p>Client: {job.get('customer_name')}</p>
+        <p>Job Category: {get_display_category(job.get('category'))}</p>
+        <p>Payment Reference: {body.payment_reference}</p>
+        <p>Please verify this transfer and confirm via the admin panel.</p>
+        """
+        send_email(
+            to_email="maintenance@mayndstomir.com",
+            subject="Manual Payment Submitted — Verification Needed",
+            html_content=admin_alert_html
+        )
+
+        return {
+            "success": True,
+            "message": "Payment reference submitted, awaiting verification",
+            "status": "awaiting_verification"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/jobs/{job_id}/verify-payment", dependencies=[Depends(verify_api_key)])
+async def verify_manual_payment(job_id: str):
+    try:
+        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job = response.data[0]
+        internal_job_id = job.get("uuid")
+
+        if job.get("status") != "awaiting_verification":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job cannot be verified from status '{job.get('status')}'"
+            )
+
+        dispatch_technician_for_job(job, internal_job_id)
+
+        return {
+            "success": True,
+            "message": "Payment verified, technician dispatch triggered"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/jobs/{job_id}/manual-payment", dependencies=[Depends(verify_api_key)])
 async def submit_manual_payment(job_id: str, body: ManualPaymentRequest):
