@@ -51,6 +51,7 @@ CATEGORY_DISPLAY_NAMES = {
 
 ACTIVE_JOB_STATUSES = ["dispatched", "in_diagnostics", "awaiting_payment", "paid"]
 CALL_OUT_FEE = 50
+DISPATCH_TIMEOUT_MINUTES = 7
 
 def get_display_category(raw_value):
     if not raw_value:
@@ -637,6 +638,161 @@ def dispatch_technician_for_job(job: dict, internal_job_id: int):
         supabase.table("jobs").update({
             "assigned_technician": assigned_name,
             "assigned_technician_id": assigned_id,
+            "status": "dispatched",
+            "dispatched_at": datetime.now(timezone.utc).isoformat()
+        }).eq("uuid", internal_job_id).execute()
+
+        # Optional: increase assigned count
+        current_assigned = technician.get("assigned_jobs_count") or 0
+        supabase.table("technicians").update({
+            "assigned_jobs_count": current_assigned + 1
+        }).eq("uuid", assigned_id).execute()
+
+        job_manage_url = f"https://www.mayndstomir.com/job-manage?id={tracking_token}"
+        maps_link = ""
+        if job.get("client_lat") and job.get("client_lng"):
+            maps_link = f"https://www.google.com/maps?q={job['client_lat']},{job['client_lng']}"
+
+        formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
+
+        email_html = f"""
+        <h2>New Job Available: {formatted_job_id} - {get_display_category(job.get('category'))}</h2>
+        <p>You have {DISPATCH_TIMEOUT_MINUTES} minutes to review and accept this dispatch before it is offered to the next available technician.</p>
+        <p><strong>Problem:</strong> {job.get('description')}</p>
+        <p><strong>Client Phone:</strong> {job.get('phone_number')}</p>
+        {'<p><strong>Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+        <p style="margin-top:20px;">
+            <a href="{job_manage_url}" 
+               style="background:#2563eb;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+               Accept or Decline Job
+            </a>
+        </p>
+        """
+
+        send_email(
+            to_email=technician.get("email_address"),
+            subject=f"New {get_display_category(job.get('category'))} Job Invitation",
+            html_content=email_html,
+            from_email="career@mayndstomir.com",
+            from_name="MSA Careers"
+        )
+
+        client_dispatch_email_html = f"""
+        <h2>Technician Matching In Progress</h2>
+        <p>Hi {job.get('customer_name')},</p>
+        <p>Your payment has been confirmed and we're matching you with the nearest available technician.</p>
+        """
+        send_email(
+            to_email=job.get("email"),
+            subject="Payment Confirmed — Matching Your Technician",
+            html_content=client_dispatch_email_html
+        )
+    else:
+        supabase.table("jobs").update({
+            "status": "pending_dispatch",
+            "dispatched_at": None
+        }).eq("uuid", internal_job_id).execute()
+
+        admin_alert_html = f"""
+        <h2>No Technician Available — Job Queued</h2>
+        <p>Job for {job.get('customer_name')} ({get_display_category(job.get('category'))}) is paid but no technician is currently available. It has been queued.</p>
+        """
+        send_email(
+            to_email="maintenance@mayndstomir.com",
+            subject="Job Queued — No Technician Available",
+            html_content=admin_alert_html
+        )
+def reassign_expired_dispatch(job: dict, internal_job_id, expired_technician_id):
+    # Free the expired technician
+    if expired_technician_id:
+        supabase.table("technicians").update({
+            "is_available": True
+        }).eq("uuid", expired_technician_id).execute()
+
+        tech_count = supabase.table("technicians").select("assigned_jobs_count").eq("uuid", expired_technician_id).execute()
+        if tech_count.data:
+            current = tech_count.data[0].get("assigned_jobs_count") or 0
+            supabase.table("technicians").update({
+                "assigned_jobs_count": max(current - 1, 0)
+            }).eq("uuid", expired_technician_id).execute()
+
+    replacement = find_available_technician(
+        job.get("category"),
+        job.get("client_lat"),
+        job.get("client_lng"),
+        exclude_technician_id=expired_technician_id
+    )
+
+    tracking_token = job.get("tracking_token")
+
+    if replacement:
+        replacement_id = replacement.get("uuid")
+        formatted_job_id = f"#MS-{str(internal_job_id).zfill(4)}"
+
+        supabase.table("jobs").update({
+            "assigned_technician": replacement.get("full_name"),
+            "assigned_technician_id": replacement_id,
+            "status": "dispatched",
+            "dispatched_at": datetime.now(timezone.utc).isoformat()
+        }).eq("uuid", internal_job_id).execute()
+
+        current_assigned = replacement.get("assigned_jobs_count") or 0
+        supabase.table("technicians").update({
+            "assigned_jobs_count": current_assigned + 1
+        }).eq("uuid", replacement_id).execute()
+
+        job_manage_url = f"https://www.mayndstomir.com/job-manage?id={tracking_token}"
+        maps_link = ""
+        if job.get("client_lat") and job.get("client_lng"):
+            maps_link = f"https://www.google.com/maps?q={job['client_lat']},{job['client_lng']}"
+
+        email_html = f"""
+        <h2>New Job Available: {formatted_job_id} - {get_display_category(job.get('category'))}</h2>
+        <p>You have {DISPATCH_TIMEOUT_MINUTES} minutes to review and accept this dispatch before it is offered to the next available technician.</p>
+        <p><strong>Problem:</strong> {job.get('description')}</p>
+        <p><strong>Client Phone:</strong> {job.get('phone_number')}</p>
+        {'<p><strong>Location:</strong> <a href="' + maps_link + '">View on Map</a></p>' if maps_link else ''}
+        <p style="margin-top:20px;">
+            <a href="{job_manage_url}" style="background:#2563eb;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+                Accept or Decline Job
+            </a>
+        </p>
+        """
+
+        send_email(
+            to_email=replacement.get("email_address"),
+            subject=f"New {get_display_category(job.get('category'))} Job Invitation",
+            html_content=email_html,
+            from_email="career@mayndstomir.com",
+            from_name="MSA Careers"
+        )
+    else:
+        supabase.table("jobs").update({
+            "assigned_technician": None,
+            "assigned_technician_id": None,
+            "status": "pending_dispatch",
+            "dispatched_at": None
+        }).eq("uuid", internal_job_id).execute()
+
+        admin_alert_html = f"""
+        <h2>Invitation Expired — No Replacement Available</h2>
+        <p>Job for {job.get('customer_name')} ({get_display_category(job.get('category'))}) expired and no replacement was available. It has been queued.</p>
+        """
+        send_email(
+            to_email="maintenance@mayndstomir.com",
+            subject="Job Queued — Invitation Expired",
+            html_content=admin_alert_html
+        )
+
+    tracking_token = job.get("tracking_token")
+
+    if technician:
+        assigned_name = technician.get("full_name")
+        assigned_id = technician.get("uuid")
+
+        supabase.table("jobs").update({
+            "assigned_technician": assigned_name,
+            "assigned_technician_id": assigned_id,
             "status": "dispatched"
         }).eq("uuid", internal_job_id).execute()
 
@@ -854,8 +1010,11 @@ async def reassign_job(job_id: int, body: ReassignRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class AcceptRequest(BaseModel):
+    technician_id: Optional[str] = None
+
 @app.patch("/jobs/{job_id}/accept", dependencies=[Depends(verify_api_key)])
-async def accept_job(job_id: str):
+async def accept_job(job_id: str, body: AcceptRequest = AcceptRequest()):
     try:
         response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
@@ -867,7 +1026,21 @@ async def accept_job(job_id: str):
         if job.get("status") != "dispatched":
             raise HTTPException(status_code=400, detail=f"Job cannot be accepted from status '{job.get('status')}'")
 
+        # Optional identity check (frontend should send the technician_id)
+        if body.technician_id is not None and str(body.technician_id) != str(job.get("assigned_technician_id")):
+            raise HTTPException(status_code=409, detail="Job invitation expired and reassigned.")
+
+        # 7-minute expiry check
+        dispatched_at_str = job.get("dispatched_at")
+        if dispatched_at_str:
+            dispatched_at = datetime.fromisoformat(dispatched_at_str.replace("Z", "+00:00"))
+            minutes_passed = (datetime.now(timezone.utc) - dispatched_at).total_seconds() / 60
+            if minutes_passed > DISPATCH_TIMEOUT_MINUTES:
+                reassign_expired_dispatch(job, internal_job_id, job.get("assigned_technician_id"))
+                raise HTTPException(status_code=409, detail="Job invitation expired and reassigned.")
+
         technician_id = job.get("assigned_technician_id")
+        # ... rest of your existing accept_job code continues here
         if not technician_id:
             raise HTTPException(status_code=400, detail="No technician assigned to this job")
 
@@ -1048,6 +1221,20 @@ async def submit_quote(job_id: str, body: QuoteRequest):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/jobs/reassign-expired-invitations", dependencies=[Depends(verify_api_key)])
+async def reassign_expired_invitations():
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=DISPATCH_TIMEOUT_MINUTES)).isoformat()
+        expired_jobs = supabase.table("jobs").select("*").eq("status", "dispatched").lte("dispatched_at", cutoff).execute()
+
+        count = 0
+        for job in expired_jobs.data or []:
+            reassign_expired_dispatch(job, job.get("uuid"), job.get("assigned_technician_id"))
+            count += 1
+
+        return {"success": True, "message": f"Reassigned {count} expired invitation(s)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 @app.patch("/jobs/{job_id}/mark-paid", dependencies=[Depends(verify_api_key)])
