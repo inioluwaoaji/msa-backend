@@ -1526,8 +1526,12 @@ async def get_email_failures():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class CancelRequest(BaseModel):
+    role: Optional[str] = None
+    override_window: Optional[bool] = False
+
 @app.patch("/jobs/{job_id}/cancel", dependencies=[Depends(verify_api_key)])
-async def cancel_job(job_id: str):
+async def cancel_job(job_id: str, body: CancelRequest = CancelRequest()):
     try:
         if job_id.isdigit():
             response = supabase.table("jobs").select("*").eq("uuid", int(job_id)).execute()
@@ -1545,13 +1549,20 @@ async def cancel_job(job_id: str):
         if job.get("status") == "cancelled":
             raise HTTPException(status_code=400, detail="Job is already cancelled")
 
-        created_at_str = job.get("created_at")
-        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        hours_passed = (now - created_at).total_seconds() / 3600
+        # Only enforce the 2-hour window for non-admin requests
+        is_admin_override = (
+            (body.role and body.role.lower() == "admin") or
+            body.override_window is True
+        )
 
-        if hours_passed > 2:
-            raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
+        if not is_admin_override:
+            created_at_str = job.get("created_at")
+            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            hours_passed = (now - created_at).total_seconds() / 3600
+
+            if hours_passed > 2:
+                raise HTTPException(status_code=400, detail="Cancellation window has expired (2 hours)")
 
         supabase.table("jobs").update({"status": "cancelled"}).eq("uuid", internal_job_id).execute()
 
@@ -1590,8 +1601,6 @@ async def cancel_job(job_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-class ApprovalUpdate(BaseModel):
-    approval_status: str  # "approved" or "rejected"
 
 @app.patch("/workers/{worker_id}/approve", dependencies=[Depends(verify_api_key)])
 async def update_technician_approval(worker_id: int, body: ApprovalUpdate):
