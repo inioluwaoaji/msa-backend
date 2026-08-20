@@ -1341,8 +1341,12 @@ async def submit_manual_payment(job_id: str, body: ManualPaymentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class VerifyPaymentRequest(BaseModel):
+    status: Optional[str] = None
+    callout_paid: Optional[bool] = False
+
 @app.patch("/jobs/{job_id}/verify-payment", dependencies=[Depends(verify_api_key)])
-async def verify_manual_payment(job_id: str):
+async def verify_manual_payment(job_id: str, body: VerifyPaymentRequest = VerifyPaymentRequest()):
     try:
         response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
         if not response.data:
@@ -1350,64 +1354,103 @@ async def verify_manual_payment(job_id: str):
 
         job = response.data[0]
         internal_job_id = job.get("uuid")
+        current_status = job.get("status")
 
-        if job.get("status") != "awaiting_verification":
+        # Allow verification from these statuses
+        if current_status not in ["awaiting_verification", "awaiting_payment", "pending_payment"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Job cannot be verified from status '{job.get('status')}'"
+                detail=f"Job cannot be verified from status '{current_status}'"
             )
 
-        dispatch_technician_for_job(job, internal_job_id)
+        now = datetime.now(timezone.utc).isoformat()
 
-        return {
-            "success": True,
-            "message": "Payment verified, technician dispatch triggered"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/jobs/{job_id}/manual-payment", dependencies=[Depends(verify_api_key)])
-async def submit_manual_payment(job_id: str, body: ManualPaymentRequest):
-    try:
-        response = supabase.table("jobs").select("*").eq("tracking_token", job_id).execute()
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        job = response.data[0]
-        internal_job_id = job.get("uuid")
-
-        if job.get("status") not in ["pending_payment", "awaiting_payment"]:
-            raise HTTPException(status_code=400, detail=f"Manual payment cannot be submitted from status '{job.get('status')}'")
-
-        supabase.table("jobs").update({
-            "status": "awaiting_verification",
-            "payment_reference": body.payment_reference
-        }).eq("uuid", internal_job_id).execute()
-
-        admin_alert_html = f"""
-        <h2>Manual Bank Transfer Submitted — Verification Needed</h2>
-        <p>Client: {job.get('customer_name')}</p>
-        <p>Job Category: {get_display_category(job.get('category'))}</p>
-        <p>Payment Reference: {body.payment_reference}</p>
-        <p>Please verify this transfer and confirm via the admin panel.</p>
-        """
-        send_email(
-            to_email="maintenance@mayndstomir.com",
-            subject="Manual Payment Submitted — Verification Needed",
-            html_content=admin_alert_html
+        # Decide whether this is a call-out fee or a full quote payment
+        has_quote_costs = (
+            (job.get("parts_cost") or 0) > 0 or
+            (job.get("labor_cost") or 0) > 0 or
+            (job.get("sourcing_fee") or 0) > 0 or
+            (job.get("total_amount") or 0) > CALL_OUT_FEE
         )
 
-        return {"success": True, "message": "Payment reference submitted, awaiting verification", "status": "awaiting_verification"}
+        is_quote_payment = (
+            has_quote_costs or
+            (body.status and body.status.lower() == "paid") or
+            current_status == "awaiting_payment"
+        )
+
+        if is_quote_payment:
+            # ---------- Full quote / diagnostic payment ----------
+            supabase.table("jobs").update({
+                "status": "paid",
+                "paid_at": now,
+                "callout_paid": True
+            }).eq("uuid", internal_job_id).execute()
+
+            # Customer receipt email
+            receipt_amount = f"QAR {job.get('total_amount'):.2f}" if job.get("total_amount") else "N/A"
+            client_email_html = f"""
+            <h2>Payment Confirmed — Repair Authorized</h2>
+            <p>Hi {job.get('customer_name')},</p>
+            <p>Your payment of <strong>{receipt_amount}</strong> has been confirmed.</p>
+            <p>Your technician is now authorized to proceed with the repair.</p>
+            """
+            send_email(
+                to_email=job.get("email"),
+                subject="Payment Confirmed — Repair Authorized",
+                html_content=client_email_html
+            )
+
+            # Technician "proceed with repair" email
+            technician_id = job.get("assigned_technician_id")
+            if technician_id:
+                tech_response = supabase.table("technicians").select(
+                    "email_address, full_name"
+                ).eq("uuid", technician_id).execute()
+
+                if tech_response.data:
+                    technician = tech_response.data[0]
+                    proceed_email_html = f"""
+                    <h2>Payment Confirmed — Proceed with Repair</h2>
+                    <p>Hi {technician.get('full_name')},</p>
+                    <p>Payment has been confirmed for the job at {job.get('customer_name')}.</p>
+                    <p>You may now proceed with the repair.</p>
+                    """
+                    send_email(
+                        to_email=technician.get("email_address"),
+                        subject="Payment Confirmed — Proceed with Repair",
+                        html_content=proceed_email_html,
+                        from_email="career@mayndstomir.com",
+                        from_name="MSA Careers"
+                    )
+
+            return {
+                "success": True,
+                "message": "Quote payment verified — job marked as paid",
+                "status": "paid"
+            }
+
+        else:
+            # ---------- Initial call-out fee ----------
+            # Re-use the existing dispatch logic
+            dispatch_technician_for_job(job, internal_job_id)
+
+            # Also stamp paid_at and callout_paid for consistency
+            supabase.table("jobs").update({
+                "paid_at": now,
+                "callout_paid": True
+            }).eq("uuid", internal_job_id).execute()
+
+            return {
+                "success": True,
+                "message": "Call-out fee verified — technician dispatch triggered",
+                "status": "dispatched"
+            }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.patch("/jobs/{job_id}/verify-payment", dependencies=[Depends(verify_api_key)])
 async def verify_manual_payment(job_id: str):
     try:
