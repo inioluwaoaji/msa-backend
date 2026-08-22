@@ -1356,26 +1356,24 @@ async def verify_manual_payment(job_id: str, body: VerifyPaymentRequest = Verify
         internal_job_id = job.get("uuid")
         current_status = job.get("status")
 
-        # Allow verification from these statuses
-allowed_statuses = [
-    "awaiting_verification",
-    "pending_verification",
-    "pending",
-    "pending_dispatch",
-    "awaiting_payment",
-    "pending_payment",
-    "dispatched"
-]
+        allowed_statuses = [
+            "awaiting_verification",
+            "pending_verification",
+            "pending",
+            "pending_dispatch",
+            "awaiting_payment",
+            "pending_payment",
+            "dispatched"
+        ]
 
-if current_status not in allowed_statuses:
-    raise HTTPException(
-        status_code=400,
-        detail=f"Job cannot be verified from status '{current_status}'"
-    )
+        if current_status not in allowed_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job cannot be verified from status '{current_status}'"
+            )
 
         now = datetime.now(timezone.utc).isoformat()
 
-        # Decide whether this is a call-out fee or a full quote payment
         has_quote_costs = (
             (job.get("parts_cost") or 0) > 0 or
             (job.get("labor_cost") or 0) > 0 or
@@ -1390,14 +1388,12 @@ if current_status not in allowed_statuses:
         )
 
         if is_quote_payment:
-            # ---------- Full quote / diagnostic payment ----------
             supabase.table("jobs").update({
                 "status": "paid",
                 "paid_at": now,
                 "callout_paid": True
             }).eq("uuid", internal_job_id).execute()
 
-            # Customer receipt email
             receipt_amount = f"QAR {job.get('total_amount'):.2f}" if job.get("total_amount") else "N/A"
             client_email_html = f"""
             <h2>Payment Confirmed — Repair Authorized</h2>
@@ -1411,7 +1407,6 @@ if current_status not in allowed_statuses:
                 html_content=client_email_html
             )
 
-            # Technician "proceed with repair" email
             technician_id = job.get("assigned_technician_id")
             if technician_id:
                 tech_response = supabase.table("technicians").select(
@@ -1441,11 +1436,8 @@ if current_status not in allowed_statuses:
             }
 
         else:
-            # ---------- Initial call-out fee ----------
-            # Re-use the existing dispatch logic
             dispatch_technician_for_job(job, internal_job_id)
 
-            # Also stamp paid_at and callout_paid for consistency
             supabase.table("jobs").update({
                 "paid_at": now,
                 "callout_paid": True
