@@ -1357,11 +1357,21 @@ async def verify_manual_payment(job_id: str, body: VerifyPaymentRequest = Verify
         current_status = job.get("status")
 
         # Allow verification from these statuses
-        if current_status not in ["awaiting_verification", "awaiting_payment", "pending_payment"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Job cannot be verified from status '{current_status}'"
-            )
+allowed_statuses = [
+    "awaiting_verification",
+    "pending_verification",
+    "pending",
+    "pending_dispatch",
+    "awaiting_payment",
+    "pending_payment",
+    "dispatched"
+]
+
+if current_status not in allowed_statuses:
+    raise HTTPException(
+        status_code=400,
+        detail=f"Job cannot be verified from status '{current_status}'"
+    )
 
         now = datetime.now(timezone.utc).isoformat()
 
